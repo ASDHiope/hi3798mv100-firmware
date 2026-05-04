@@ -16,6 +16,8 @@ jobs:
   build-firmware:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout
