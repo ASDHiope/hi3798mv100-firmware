@@ -29,9 +29,25 @@ echo "Current disk usage:"
 df -h /
 echo ""
 
-echo "[1/6] Removing Samba and Transmission..."
+echo "[0/7] Fixing APT cache..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
+if ! apt-get update -qq 2>/dev/null; then
+    echo "  APT update failed, cleaning cache..."
+    rm -rf /var/lib/apt/lists/*
+    apt-get update -qq || {
+        echo "  Still failing, trying to fix sources..."
+        apt-get update --allow-releaseinfo-change 2>/dev/null || true
+    }
+fi
+echo ""
+
+echo "[1/7] Stopping Samba services..."
+systemctl stop smbd nmbd samba-ad-dc 2>/dev/null || true
+killall -9 smbd nmbd 2>/dev/null || true
+echo "  Samba services stopped"
+echo ""
+
+echo "[2/7] Removing Samba and Transmission..."
 
 PACKAGES_TO_REMOVE="samba samba-common samba-common-bin samba-dsdb-modules samba-libs smbclient transmission-daemon transmission-cli transmission-common"
 
@@ -48,7 +64,7 @@ apt-get autoremove --purge -y 2>/dev/null || true
 echo "  Samba and Transmission removed"
 
 echo ""
-echo "[2/6] Installing X11 and GPU support..."
+echo "[3/7] Installing X11 and GPU support..."
 PACKAGES_X11="xserver-xorg-core xserver-xorg-video-fbdev xserver-xorg-input-evdev xinit x11-utils x11-xserver-utils"
 
 for pkg in $PACKAGES_X11; do
@@ -57,7 +73,7 @@ for pkg in $PACKAGES_X11; do
 done
 
 echo ""
-echo "[3/6] Installing Kodi..."
+echo "[4/7] Installing Kodi..."
 PACKAGES_KODI="kodi kodi-bin kodi-data kodi-repository-kodi kodi-inputstream-adaptive kodi-pvr-iptvsimple"
 
 for pkg in $PACKAGES_KODI; do
@@ -66,7 +82,7 @@ for pkg in $PACKAGES_KODI; do
 done
 
 echo ""
-echo "[4/6] Installing Bluetooth support..."
+echo "[5/7] Installing Bluetooth support..."
 PACKAGES_BT="bluez bluez-firmware python3-dbus libbluetooth3 pulseaudio-module-bluetooth"
 
 for pkg in $PACKAGES_BT; do
@@ -77,7 +93,7 @@ done
 apt-get clean
 
 echo ""
-echo "[5/6] Configuring GPU, Kodi, and Bluetooth..."
+echo "[6/7] Configuring GPU, Kodi, and Bluetooth..."
 mkdir -p /etc/X11
 cat > /etc/X11/xorg.conf << 'XORGEOF'
 Section "Device"
@@ -157,7 +173,7 @@ systemctl enable kodi.service 2>/dev/null || true
 systemctl enable bluetooth 2>/dev/null || true
 
 echo ""
-echo "[6/6] Final cleanup..."
+echo "[7/7] Final cleanup..."
 apt-get autoremove --purge -y 2>/dev/null || true
 apt-get clean
 rm -rf /var/cache/apt/archives/*.deb
