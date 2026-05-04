@@ -1,0 +1,117 @@
+name: Build Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_image_url:
+        description: 'URL to download base rootfs ext4 image (backup-32.raw)'
+        required: true
+        default: ''
+      kernel_artifact:
+        description: 'Kernel build artifact name (empty = build kernel too)'
+        required: false
+        default: ''
+
+jobs:
+  build-firmware:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential gcc-arm-linux-gnueabihf \
+            binutils-arm-linux-gnueabihf cpp-arm-linux-gnueabihf \
+            make gettext bison flex bc zlib1g-dev libncurses5-dev \
+            lzma u-boot-tools device-tree-compiler git cpio \
+            python3 python3-pyelftools libssl-dev wget \
+            qemu-user-static debootstrap dpkg-cross \
+            android-sdk-libsparse-utils e2fsprogs
+
+      - name: Download base rootfs image
+        run: |
+          if [ -n "${{ github.event.inputs.base_image_url }}" ]; then
+            wget -q --show-progress "${{ github.event.inputs.base_image_url }}" -O backup-32.raw
+          else
+            echo "ERROR: No base image URL provided"
+            exit 1
+          fi
+          echo "Base image size: $(du -h backup-32.raw | cut -f1)"
+
+      - name: Build or download kernel
+        if: github.event.inputs.kernel_artifact == ''
+        run: |
+          git clone --depth 1 \
+            https://gitee.com/lh736/HiSTBLinuxV100R005C00SPC060.git \
+            HiSTBLinuxV100R005C00SPC060 || {
+              git clone --depth 1 \
+                https://github.com/wdznb/EC6108V9C_HiSTBLinuxV100R005C00SPC060.git \
+                HiSTBLinuxV100R005C00SPC060
+            }
+
+          KERNEL_VERSION="4.4.35"
+          SDK_KERNEL="HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y"
+          wget -q "https://mirrors.edge.kernel.org/pub/linux/kernel/v4.x/linux-${KERNEL_VERSION}.tar.gz"
+          tar xzf "linux-${KERNEL_VERSION}.tar.gz"
+          [ ! -d "${SDK_KERNEL}/scripts/basic" ] && cp -r "linux-${KERNEL_VERSION}/scripts/basic/" "${SDK_KERNEL}/scripts/"
+          [ ! -d "${SDK_KERNEL}/scripts/kconfig" ] && cp -r "linux-${KERNEL_VERSION}/scripts/kconfig/" "${SDK_KERNEL}/scripts/"
+
+          if [ -f "dts/hi3798mv100.dts" ]; then
+            cp dts/hi3798mv100.dts "${SDK_KERNEL}/arch/arm/boot/dts/"
+          fi
+
+          cd HiSTBLinuxV100R005C00SPC060
+          cp configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
+          source env.sh
+          make linux -j$(nproc)
+
+          cp out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin ../hi_kernel_new.bin
+
+      - name: Download kernel artifact
+        if: github.event.inputs.kernel_artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.event.inputs.kernel_artifact }}
+          path: kernel-artifact/
+
+      - name: Modify rootfs
+        run: |
+          chmod +x scripts/modify_rootfs.sh
+          sudo bash scripts/modify_rootfs.sh backup-32.raw
+
+      - name: Package firmware
+        run: |
+          mkdir -p firmware_output
+
+          if [ -f hi_kernel_new.bin ]; then
+            cp hi_kernel_new.bin firmware_output/
+          elif [ -f kernel-artifact/hi_kernel_new.bin ]; then
+            cp kernel-artifact/hi_kernel_new.bin firmware_output/
+          fi
+
+          cp backup-32.raw firmware_output/
+
+          chmod +x scripts/package_firmware.sh
+          bash scripts/package_firmware.sh firmware_output/
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hi3798mv100-firmware
+          path: firmware_output/
+          retention-days: 7
+
+      - name: Create release
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: firmware-${{ github.run_number }}
+          name: Hi3798MV100 Firmware Build #${{ github.run_number }}
+          files: firmware_output/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

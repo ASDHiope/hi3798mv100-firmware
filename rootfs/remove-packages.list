@@ -1,0 +1,9 @@
+samba
+samba-common
+samba-common-bin
+samba-dsdb-modules
+samba-libs
+smbclient
+transmission-daemon
+transmission-cli
+transmission-common

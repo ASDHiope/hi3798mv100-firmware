@@ -1,0 +1,151 @@
+name: Build Kernel
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'dts/**'
+      - 'configs/**'
+      - 'scripts/build_kernel.sh'
+      - '.github/workflows/build-kernel.yml'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      sdk_repo:
+        description: 'HiSTBLinux SDK repository URL'
+        required: false
+        default: 'https://gitee.com/lh736/HiSTBLinuxV100R005C00SPC060.git'
+      sdk_branch:
+        description: 'SDK branch/tag'
+        required: false
+        default: 'master'
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential gcc-arm-linux-gnueabihf \
+            binutils-arm-linux-gnueabihf cpp-arm-linux-gnueabihf \
+            make gettext bison flex bc zlib1g-dev libncurses5-dev \
+            lzma u-boot-tools device-tree-compiler git cpio \
+            python3 python3-pyelftools libssl-dev wget
+
+      - name: Clone HiSTBLinux SDK
+        run: |
+          git clone --depth 1 \
+            ${{ github.event.inputs.sdk_repo || 'https://gitee.com/lh736/HiSTBLinuxV100R005C00SPC060.git' }} \
+            HiSTBLinuxV100R005C00SPC060 || {
+              echo "Gitee clone failed, trying GitHub mirror..."
+              git clone --depth 1 \
+                https://github.com/wdznb/EC6108V9C_HiSTBLinuxV100R005C00SPC060.git \
+                HiSTBLinuxV100R005C00SPC060
+            }
+
+      - name: Fix SDK missing files
+        run: |
+          KERNEL_VERSION="4.4.35"
+          SDK_KERNEL="HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y"
+
+          if [ ! -d "${SDK_KERNEL}/scripts/basic" ] || [ ! -d "${SDK_KERNEL}/scripts/kconfig" ]; then
+            echo "Downloading Linux ${KERNEL_VERSION} for missing scripts..."
+            wget -q "https://mirrors.edge.kernel.org/pub/linux/kernel/v4.x/linux-${KERNEL_VERSION}.tar.gz"
+            tar xzf "linux-${KERNEL_VERSION}.tar.gz"
+
+            [ ! -d "${SDK_KERNEL}/scripts/basic" ] && cp -r "linux-${KERNEL_VERSION}/scripts/basic/" "${SDK_KERNEL}/scripts/"
+            [ ! -d "${SDK_KERNEL}/scripts/kconfig" ] && cp -r "linux-${KERNEL_VERSION}/scripts/kconfig/" "${SDK_KERNEL}/scripts/"
+          fi
+
+      - name: Copy custom DTS
+        run: |
+          SDK_KERNEL="HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y"
+          DTS_DIR="${SDK_KERNEL}/arch/arm/boot/dts"
+
+          if [ -f "dts/hi3798mv100.dts" ]; then
+            cp dts/hi3798mv100.dts "${DTS_DIR}/"
+            echo "Custom DTS copied"
+
+            if grep -q "hi3798mv100.dts" "${DTS_DIR}/Makefile" 2>/dev/null; then
+              echo "DTS already in Makefile"
+            else
+              echo "dtb-\$(CONFIG_ARCH_HI3798MV100) += hi3798mv100.dtb" >> "${DTS_DIR}/Makefile"
+              echo "DTS added to Makefile"
+            fi
+          fi
+
+      - name: Configure SDK
+        run: |
+          cd HiSTBLinuxV100R005C00SPC060
+          if [ -f "configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak" ]; then
+            cp configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
+            echo "Configured for hi3798mdmo1g (1GB RAM)"
+          else
+            echo "Warning: cfg.mak template not found, listing available configs:"
+            find configs/ -name "*hi3798*" -type f 2>/dev/null || true
+            exit 1
+          fi
+
+      - name: Build kernel
+        run: |
+          cd HiSTBLinuxV100R005C00SPC060
+          source env.sh
+          make linux -j$(nproc) 2>&1 | tee build.log
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p output
+          SDK_OUT="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/image/emmc_image"
+
+          if [ -f "${SDK_OUT}/hi_kernel.bin" ]; then
+            cp "${SDK_OUT}/hi_kernel.bin" output/hi_kernel_new.bin
+            echo "Kernel image found"
+          else
+            echo "Searching for kernel image..."
+            find HiSTBLinuxV100R005C00SPC060/out/ -name "hi_kernel*" -type f 2>/dev/null || true
+            find HiSTBLinuxV100R005C00SPC060/source/kernel/ -name "uImage" -type f 2>/dev/null || true
+            find HiSTBLinuxV100R005C00SPC060/source/kernel/ -name "zImage" -type f 2>/dev/null || true
+            echo "ERROR: Kernel image not found in expected location"
+            exit 1
+          fi
+
+          if [ -f "${SDK_OUT}/hi3798mv100.dtb" ]; then
+            cp "${SDK_OUT}/hi3798mv100.dtb" output/
+          fi
+
+          DTB_FIND=$(find HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y/arch/arm/boot/dts/ -name "hi3798mv100.dtb" 2>/dev/null | head -1)
+          if [ -n "$DTB_FIND" ]; then
+            cp "$DTB_FIND" output/hi3798mv100.dtb
+          fi
+
+          cp HiSTBLinuxV100R005C00SPC060/build.log output/ 2>/dev/null || true
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hi3798mv100-kernel
+          path: output/
+          retention-days: 30
+
+      - name: Build summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Device | Hi3798MV100 mdmo1g |" >> $GITHUB_STEP_SUMMARY
+          echo "| Kernel | Linux 4.4.35_ecoo |" >> $GITHUB_STEP_SUMMARY
+          echo "| SDK | HiSTBLinuxV100R005C00SPC060 |" >> $GITHUB_STEP_SUMMARY
+          echo "| RAM | 1GB |" >> $GITHUB_STEP_SUMMARY
+          echo "| GPU | Mali-450 MP6 |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Output Files" >> $GITHUB_STEP_SUMMARY
+          ls -lh output/ >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
