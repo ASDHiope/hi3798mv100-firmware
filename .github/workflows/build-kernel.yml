@@ -99,17 +99,32 @@ jobs:
           grep "CONFIG_DEVTMPFS_MOUNT" "$CONFIG_FILE" || echo "(no DEVTMPFS_MOUNT)"
 
           echo ""
-          echo "=== Patching ==="
-          sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="_ecoo_81082668"/' "$CONFIG_FILE"
-          if ! grep -q 'CONFIG_LOCALVERSION=' "$CONFIG_FILE"; then
-            sed -i '1i CONFIG_LOCALVERSION="_ecoo_81082668"' "$CONFIG_FILE"
-          fi
-          sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$CONFIG_FILE"
+          echo "=== Patching ALL .config files ==="
+          for cfgfile in $(find HiSTBLinuxV100R005C00SPC060/ -name ".config" -type f 2>/dev/null); do
+            echo "Patching: $cfgfile"
+            sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="_ecoo_81082668"/' "$cfgfile"
+            if ! grep -q 'CONFIG_LOCALVERSION=' "$cfgfile"; then
+              echo 'CONFIG_LOCALVERSION="_ecoo_81082668"' >> "$cfgfile"
+            fi
+            sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$cfgfile"
+            for opt in DEVTMPFS DEVTMPFS_MOUNT TMPFS FUTEX EPOLL SIGNALFD TIMERFD EVENTFD INOTIFY_USER FHANDLE MULTIUSER SYSFS; do
+              sed -i "s/# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "$cfgfile"
+              if ! grep -q "CONFIG_${opt}=y" "$cfgfile"; then
+                echo "CONFIG_${opt}=y" >> "$cfgfile"
+              fi
+            done
+          done
 
-          for opt in DEVTMPFS DEVTMPFS_MOUNT TMPFS FUTEX EPOLL SIGNALFD TIMERFD EVENTFD INOTIFY_USER FHANDLE MULTIUSER SYSFS; do
-            sed -i "s/# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "$CONFIG_FILE"
-            if ! grep -q "CONFIG_${opt}=y" "$CONFIG_FILE"; then
-              echo "CONFIG_${opt}=y" >> "$CONFIG_FILE"
+          echo ""
+          echo "=== Force-update kernel release strings ==="
+          KERNEL_SRC="HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y"
+          for f in \
+            "${KERNEL_SRC}/include/config/kernel.release" \
+            "${KERNEL_SRC}/include/generated/utsrelease.h"; do
+            if [ -f "$f" ]; then
+              echo "Before: $(cat $f)"
+              sed -i 's/_s40/_ecoo_81082668/g' "$f"
+              echo "After:  $(cat $f)"
             fi
           done
 
@@ -141,9 +156,24 @@ jobs:
         run: |
           cd HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y
 
-          echo "=== Rebuilding kernel ==="
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- clean 2>&1 | tail -3
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) 2>&1 | tail -10
+          echo "=== Distclean and full rebuild ==="
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- distclean 2>&1 | tail -3
+
+          echo "Restoring patched .config..."
+          cp ../../out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y/.config .config 2>/dev/null || true
+          if ! grep -q "CONFIG_LOCALVERSION.*ecoo" .config 2>/dev/null; then
+            echo "ERROR: .config lost after distclean!"
+            exit 1
+          fi
+
+          echo "=== Verifying .config before build ==="
+          grep "CONFIG_LOCALVERSION=" .config
+          grep "CONFIG_DEVTMPFS" .config
+          grep "CONFIG_DEVTMPFS_MOUNT" .config
+
+          echo ""
+          echo "=== Building kernel ==="
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) 2>&1 | tail -20
 
           echo ""
           echo "=== Creating uImage ==="
