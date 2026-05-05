@@ -10,6 +10,7 @@
 
 typedef int HI_S32;
 typedef unsigned int HI_U32;
+typedef unsigned char HI_U8;
 typedef char HI_CHAR;
 typedef enum { HI_FALSE = 0, HI_TRUE = 1 } HI_BOOL;
 
