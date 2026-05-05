@@ -3,23 +3,7 @@ name: Build Kernel
 on:
   push:
     branches: [main, master]
-    paths:
-      - 'dts/**'
-      - 'configs/**'
-      - 'scripts/build_kernel.sh'
-      - '.github/workflows/build-kernel.yml'
-  pull_request:
-    branches: [main, master]
   workflow_dispatch:
-    inputs:
-      sdk_repo:
-        description: 'HiSTBLinux SDK repository URL'
-        required: false
-        default: 'https://gitee.com/lh736/HiSTBLinuxV100R005C00SPC060.git'
-      sdk_branch:
-        description: 'SDK branch/tag'
-        required: false
-        default: 'master'
 
 jobs:
   build-kernel:
@@ -47,7 +31,7 @@ jobs:
       - name: Clone HiSTBLinux SDK
         run: |
           git clone --depth 1 \
-            ${{ github.event.inputs.sdk_repo || 'https://gitee.com/lh736/HiSTBLinuxV100R005C00SPC060.git' }} \
+            https://gitee.com/lh736/HiSTBLinuxV100R005C00SPC060.git \
             HiSTBLinuxV100R005C00SPC060 || {
               echo "Gitee clone failed, trying GitHub mirror..."
               git clone --depth 1 \
@@ -55,7 +39,7 @@ jobs:
                 HiSTBLinuxV100R005C00SPC060
             }
 
-      - name: Fix SDK missing files
+      - name: Fix SDK missing files and copy DTS
         run: |
           KERNEL_VERSION="4.4.35"
           SDK_KERNEL="HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y"
@@ -64,82 +48,66 @@ jobs:
             echo "Downloading Linux ${KERNEL_VERSION} for missing scripts..."
             wget -q "https://mirrors.edge.kernel.org/pub/linux/kernel/v4.x/linux-${KERNEL_VERSION}.tar.gz"
             tar xzf "linux-${KERNEL_VERSION}.tar.gz"
-
             [ ! -d "${SDK_KERNEL}/scripts/basic" ] && cp -r "linux-${KERNEL_VERSION}/scripts/basic/" "${SDK_KERNEL}/scripts/"
             [ ! -d "${SDK_KERNEL}/scripts/kconfig" ] && cp -r "linux-${KERNEL_VERSION}/scripts/kconfig/" "${SDK_KERNEL}/scripts/"
           fi
 
-      - name: Copy custom DTS
-        run: |
-          SDK_KERNEL="HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y"
-          DTS_DIR="${SDK_KERNEL}/arch/arm/boot/dts"
-
           if [ -f "dts/hi3798mv100.dts" ]; then
-            cp dts/hi3798mv100.dts "${DTS_DIR}/"
-            echo "Custom DTS copied"
-
-            if grep -q "hi3798mv100.dts" "${DTS_DIR}/Makefile" 2>/dev/null; then
-              echo "DTS already in Makefile"
-            else
-              echo "dtb-\$(CONFIG_ARCH_HI3798MV100) += hi3798mv100.dtb" >> "${DTS_DIR}/Makefile"
-              echo "DTS added to Makefile"
+            cp dts/hi3798mv100.dts "${SDK_KERNEL}/arch/arm/boot/dts/"
+            if ! grep -q "hi3798mv100.dts" "${SDK_KERNEL}/arch/arm/boot/dts/Makefile" 2>/dev/null; then
+              echo "dtb-\$(CONFIG_ARCH_HI3798MV100) += hi3798mv100.dtb" >> "${SDK_KERNEL}/arch/arm/boot/dts/Makefile"
             fi
           fi
 
-      - name: Build kernel with SDK (first pass)
+      - name: Build kernel with SDK
         run: |
           cd HiSTBLinuxV100R005C00SPC060
-          if [ -f "configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak" ]; then
-            cp configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
-          else
-            echo "ERROR: cfg.mak not found"
-            find configs/ -name "*hi3798*" -type f 2>/dev/null || true
-            exit 1
-          fi
-
+          cp configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
           source env.sh
           make linux -j$(nproc)
 
-          echo "=== SDK build complete ==="
-          echo "Searching for .config..."
-          find out/ -name ".config" 2>/dev/null || true
-          find source/kernel/ -name ".config" 2>/dev/null || true
-
-      - name: Patch kernel config and rebuild
+      - name: Find and patch kernel .config
         run: |
-          cd HiSTBLinuxV100R005C00SPC060
+          echo "=== Searching for .config ==="
+          find HiSTBLinuxV100R005C00SPC060/ -name ".config" -type f 2>/dev/null
 
-          CONFIG_FILE=$(find source/kernel/linux-4.4.y -name ".config" | head -1)
+          CONFIG_FILE=""
+          for f in \
+            HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y/.config \
+            HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y/.config; do
+            if [ -f "$f" ]; then
+              CONFIG_FILE="$f"
+              break
+            fi
+          done
+
           if [ -z "$CONFIG_FILE" ]; then
-            CONFIG_FILE=$(find out/ -name ".config" | head -1)
+            CONFIG_FILE=$(find HiSTBLinuxV100R005C00SPC060/ -name ".config" -type f 2>/dev/null | head -1)
           fi
 
           if [ -z "$CONFIG_FILE" ]; then
-            echo "ERROR: .config not found anywhere!"
+            echo "FATAL: .config not found anywhere!"
             exit 1
           fi
 
-          echo "Found .config at: $CONFIG_FILE"
+          echo "Found .config: $CONFIG_FILE"
           echo ""
+
           echo "=== Before patching ==="
-          grep "CONFIG_LOCALVERSION=" "$CONFIG_FILE" || echo "LOCALVERSION not set"
-          grep "CONFIG_DEVTMPFS" "$CONFIG_FILE" || echo "DEVTMPFS not set"
-          grep "CONFIG_DEVTMPFS_MOUNT" "$CONFIG_FILE" || echo "DEVTMPFS_MOUNT not set"
+          grep "CONFIG_LOCALVERSION=" "$CONFIG_FILE" || echo "(no LOCALVERSION)"
+          grep "CONFIG_DEVTMPFS" "$CONFIG_FILE" || echo "(no DEVTMPFS)"
+          grep "CONFIG_DEVTMPFS_MOUNT" "$CONFIG_FILE" || echo "(no DEVTMPFS_MOUNT)"
 
           echo ""
-          echo "=== Patching .config ==="
-
+          echo "=== Patching ==="
           sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="_ecoo_81082668"/' "$CONFIG_FILE"
-          sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$CONFIG_FILE" 2>/dev/null || true
-          if ! grep -q "CONFIG_LOCALVERSION=" "$CONFIG_FILE"; then
-            echo 'CONFIG_LOCALVERSION="_ecoo_81082668"' >> "$CONFIG_FILE"
+          if ! grep -q 'CONFIG_LOCALVERSION=' "$CONFIG_FILE"; then
+            sed -i '1i CONFIG_LOCALVERSION="_ecoo_81082668"' "$CONFIG_FILE"
           fi
-          if grep -q "CONFIG_LOCALVERSION_AUTO=y" "$CONFIG_FILE"; then
-            sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$CONFIG_FILE"
-          fi
+          sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$CONFIG_FILE"
 
           for opt in DEVTMPFS DEVTMPFS_MOUNT TMPFS FUTEX EPOLL SIGNALFD TIMERFD EVENTFD INOTIFY_USER FHANDLE MULTIUSER SYSFS; do
-            sed -i "s/# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "$CONFIG_FILE" 2>/dev/null || true
+            sed -i "s/# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "$CONFIG_FILE"
             if ! grep -q "CONFIG_${opt}=y" "$CONFIG_FILE"; then
               echo "CONFIG_${opt}=y" >> "$CONFIG_FILE"
             fi
@@ -151,9 +119,16 @@ jobs:
           grep "CONFIG_DEVTMPFS" "$CONFIG_FILE"
           grep "CONFIG_DEVTMPFS_MOUNT" "$CONFIG_FILE"
 
+          KERNEL_DIR=$(dirname "$CONFIG_FILE")
+          if [ "$KERNEL_DIR" != "HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y" ]; then
+            echo "Copying patched .config to kernel source tree..."
+            cp "$CONFIG_FILE" HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y/.config
+            KERNEL_DIR="HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y"
+          fi
+
           echo ""
           echo "=== Running oldconfig ==="
-          cd source/kernel/linux-4.4.y
+          cd "$KERNEL_DIR"
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- oldconfig </dev/null 2>&1 || true
 
           echo ""
@@ -162,62 +137,71 @@ jobs:
           grep "CONFIG_DEVTMPFS" .config
           grep "CONFIG_DEVTMPFS_MOUNT" .config
 
-          echo ""
-          echo "=== Rebuilding kernel directly ==="
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) 2>&1 | tail -20
+      - name: Rebuild kernel with patched config
+        run: |
+          cd HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y
+
+          echo "=== Rebuilding kernel ==="
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- clean 2>&1 | tail -3
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) 2>&1 | tail -10
 
           echo ""
           echo "=== Creating uImage ==="
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- uImage 2>&1 || true
 
           echo ""
-          echo "=== Kernel build output ==="
-          ls -lh arch/arm/boot/uImage 2>/dev/null || echo "uImage not found at arch/arm/boot/uImage"
+          echo "=== Build output ==="
+          ls -lh arch/arm/boot/uImage 2>/dev/null || echo "uImage not found"
           ls -lh arch/arm/boot/zImage 2>/dev/null || echo "zImage not found"
+
+          if [ -f arch/arm/boot/uImage ]; then
+            echo ""
+            echo "=== Verifying uImage ==="
+            strings arch/arm/boot/uImage | grep "4.4.35" | head -5
+            if strings arch/arm/boot/uImage | grep -q "4.4.35_ecoo"; then
+              echo "OK: Version is 4.4.35_ecoo_81082668"
+            else
+              echo "FAIL: Version is NOT 4.4.35_ecoo_81082668"
+            fi
+            if strings arch/arm/boot/uImage | grep -qi "devtmpfs"; then
+              echo "OK: devtmpfs found"
+            else
+              echo "FAIL: devtmpfs NOT found"
+            fi
+          fi
 
       - name: Prepare artifacts
         run: |
           mkdir -p output
 
-          SDK_OUT="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/image/emmc_image"
-          KERNEL_BOOT="HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y/arch/arm/boot"
+          UIMAGE="HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y/arch/arm/boot/uImage"
+          SDK_KERNEL="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin"
 
-          if [ -f "${SDK_OUT}/hi_kernel.bin" ]; then
-            cp "${SDK_OUT}/hi_kernel.bin" output/hi_kernel_sdk.bin
-            echo "SDK kernel found"
-          fi
-
-          if [ -f "${KERNEL_BOOT}/uImage" ]; then
-            cp "${KERNEL_BOOT}/uImage" output/hi_kernel_new.bin
-            echo "Direct-build uImage found"
-          elif [ -f "${SDK_OUT}/hi_kernel.bin" ]; then
-            cp "${SDK_OUT}/hi_kernel.bin" output/hi_kernel_new.bin
-            echo "Using SDK kernel as fallback"
+          if [ -f "$UIMAGE" ]; then
+            cp "$UIMAGE" output/hi_kernel_new.bin
+            echo "Using direct-build uImage"
+          elif [ -f "$SDK_KERNEL" ]; then
+            cp "$SDK_KERNEL" output/hi_kernel_new.bin
+            echo "WARNING: Using SDK kernel (patches may not be applied)"
           else
-            echo "Searching for kernel..."
-            find HiSTBLinuxV100R005C00SPC060/ -name "uImage" -type f 2>/dev/null || true
-            find HiSTBLinuxV100R005C00SPC060/ -name "zImage" -type f 2>/dev/null || true
-            echo "ERROR: No kernel image found"
+            echo "ERROR: No kernel found"
+            find HiSTBLinuxV100R005C00SPC060/ -name "uImage" -o -name "hi_kernel*" 2>/dev/null || true
             exit 1
           fi
 
           echo ""
-          echo "=== Verifying kernel ==="
-          echo "Kernel size: $(du -h output/hi_kernel_new.bin | cut -f1)"
-          echo ""
-          echo "Version strings:"
-          strings output/hi_kernel_new.bin | grep "4.4.35" | head -5 || true
-          echo ""
+          echo "=== Final verification ==="
+          echo "Size: $(du -h output/hi_kernel_new.bin | cut -f1)"
+          strings output/hi_kernel_new.bin | grep "4.4.35" | head -5
           if strings output/hi_kernel_new.bin | grep -q "4.4.35_ecoo"; then
             echo "OK: Version matches 4.4.35_ecoo_81082668"
           else
-            echo "WARNING: Version does NOT match! Expected 4.4.35_ecoo_81082668"
+            echo "FAIL: Version does NOT match!"
           fi
-          echo ""
-          if strings output/hi_kernel_new.bin | grep -q "devtmpfs"; then
-            echo "OK: devtmpfs found in kernel binary"
+          if strings output/hi_kernel_new.bin | grep -qi "devtmpfs"; then
+            echo "OK: devtmpfs found"
           else
-            echo "WARNING: devtmpfs NOT found in kernel binary!"
+            echo "FAIL: devtmpfs NOT found!"
           fi
 
       - name: Upload kernel artifact
@@ -226,20 +210,3 @@ jobs:
           name: hi3798mv100-kernel
           path: output/
           retention-days: 30
-
-      - name: Build summary
-        run: |
-          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Device | Hi3798MV100 mdmo1g |" >> $GITHUB_STEP_SUMMARY
-          echo "| Kernel | Linux 4.4.35_ecoo_81082668 |" >> $GITHUB_STEP_SUMMARY
-          echo "| SDK | HiSTBLinuxV100R005C00SPC060 |" >> $GITHUB_STEP_SUMMARY
-          echo "| DEVTMPFS | Enabled |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Verification" >> $GITHUB_STEP_SUMMARY
-          strings output/hi_kernel_new.bin | grep "4.4.35" | head -3 >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Output Files" >> $GITHUB_STEP_SUMMARY
-          ls -lh output/ >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
