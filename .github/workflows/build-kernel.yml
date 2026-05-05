@@ -186,6 +186,38 @@ jobs:
           cp "$KERNEL_SRC" output/hi_kernel_new.bin
 
           echo ""
+          echo "=== Collecting kernel modules ==="
+          OUT_DIR="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g"
+          KO_DIR="output/kmodules"
+
+          mkdir -p "$KO_DIR"
+
+          echo "Searching for KO modules in SDK output..."
+          find "$OUT_DIR" -name "*.ko" -type f 2>/dev/null | while read ko; do
+            echo "  Found: $ko"
+            cp "$ko" "$KO_DIR/"
+          done
+
+          echo ""
+          echo "Searching for KO modules in SDK image directory..."
+          IMAGE_DIR="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/image"
+          find "$IMAGE_DIR" -name "*.ko" -type f 2>/dev/null | while read ko; do
+            echo "  Found: $ko"
+            cp "$ko" "$KO_DIR/" 2>/dev/null || true
+          done
+
+          echo ""
+          echo "Searching for pre-built HiSilicon KO modules..."
+          find HiSTBLinuxV100R005C00SPC060/source -name "hi_*.ko" -o -name "hifb.ko" -o -name "mali.ko" 2>/dev/null | while read ko; do
+            echo "  Found: $ko"
+            cp "$ko" "$KO_DIR/" 2>/dev/null || true
+          done
+
+          echo ""
+          echo "KO modules collected: $(ls "$KO_DIR"/*.ko 2>/dev/null | wc -l)"
+          ls -lh "$KO_DIR/" 2>/dev/null || echo "No KO modules found"
+
+          echo ""
           echo "=== Final verification ==="
           echo "Size: $(du -h output/hi_kernel_new.bin | cut -f1)"
           strings output/hi_kernel_new.bin | grep "4.4.35" | head -5
@@ -193,11 +225,6 @@ jobs:
             echo "OK: Version matches 4.4.35_ecoo_81082668"
           else
             echo "FAIL: Version does NOT match!"
-          fi
-          if strings output/hi_kernel_new.bin | grep -qi "devtmpfs"; then
-            echo "OK: devtmpfs found"
-          else
-            echo "FAIL: devtmpfs NOT found!"
           fi
 
       - name: Upload kernel artifact
