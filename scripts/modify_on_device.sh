@@ -177,12 +177,13 @@ case "$1" in
             exit 1
         fi
 
+        load_module hi_pdm.ko    || log_warn "hi_pdm failed (non-critical, display params may be default)"
+        load_module hi_pq.ko     || log_warn "hi_pq failed"
         load_module hi_vou.ko    || log_warn "hi_vou failed"
         load_module hi_hdmi.ko   || log_warn "hi_hdmi failed"
         load_module hi_fb.ko     || log_warn "hi_fb failed"
         load_module hi_tde.ko    || log_warn "hi_tde failed"
         load_module hi_vpss.ko   || log_warn "hi_vpss failed"
-        load_module hi_pq.ko     || log_warn "hi_pq failed"
         load_module hi_sync.ko   || log_warn "hi_sync failed"
         load_module mali.ko      || log_warn "mali failed"
 
@@ -202,7 +203,7 @@ case "$1" in
         ;;
     stop)
         log_info "Unloading HiSilicon drivers..."
-        for m in mali hi_sync hi_pq hi_vpss hi_tde hi_fb hi_hdmi hi_vou hi_common hi_mmz hi_media; do
+        for m in mali hi_sync hi_vpss hi_tde hi_fb hi_hdmi hi_vou hi_pq hi_pdm hi_common hi_mmz hi_media; do
             if lsmod | grep -q "^${m}[[:space:]]"; then
                 rmmod "${m}" 2>/dev/null && log_info "Unloaded ${m}" || log_warn "Failed to unload ${m}"
             fi
