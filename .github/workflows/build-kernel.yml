@@ -58,8 +58,22 @@ jobs:
             if ! grep -q "CONFIG_DEVTMPFS_MOUNT=y" "$DEFCONFIG"; then
               echo "CONFIG_DEVTMPFS_MOUNT=y" >> "$DEFCONFIG"
             fi
+            for opt in CGROUPS CGROUP_FREEZER CGROUP_DEVICE CGROUP_CPUACCT CGROUP_SCHED CGROUP_PIDS MEMCG BLK_CGROUP CPUSETS; do
+              sed -i "s/# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "$DEFCONFIG"
+              if ! grep -q "CONFIG_${opt}=y" "$DEFCONFIG"; then
+                echo "CONFIG_${opt}=y" >> "$DEFCONFIG"
+              fi
+            done
+            for opt in TMPFS POSIX_MQUEUE SIGNALFD TIMERFD EVENTFD EPOLL FUTEX INOTIFY_USER FHANDLE SYSFS; do
+              sed -i "s/# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "$DEFCONFIG"
+              if ! grep -q "CONFIG_${opt}=y" "$DEFCONFIG"; then
+                echo "CONFIG_${opt}=y" >> "$DEFCONFIG"
+              fi
+            done
             echo "  LOCALVERSION: $(grep CONFIG_LOCALVERSION= "$DEFCONFIG")"
             echo "  DEVTMPFS: $(grep CONFIG_DEVTMPFS "$DEFCONFIG" | head -2)"
+            echo "  CGROUPS: $(grep CONFIG_CGROUPS "$DEFCONFIG" | head -2)"
+            echo "  TMPFS: $(grep CONFIG_TMPFS "$DEFCONFIG" | head -1)"
           done
 
           echo ""
@@ -111,7 +125,7 @@ jobs:
                 echo 'CONFIG_LOCALVERSION="_ecoo_81082668"' >> "$OUT_DIR/.config"
               fi
               sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$OUT_DIR/.config"
-              for opt in DEVTMPFS DEVTMPFS_MOUNT; do
+              for opt in DEVTMPFS DEVTMPFS_MOUNT CGROUPS CGROUP_FREEZER CGROUP_DEVICE CGROUP_CPUACCT CGROUP_SCHED CGROUP_PIDS MEMCG BLK_CGROUP CPUSETS TMPFS POSIX_MQUEUE SIGNALFD TIMERFD EVENTFD EPOLL FUTEX INOTIFY_USER FHANDLE SYSFS; do
                 sed -i "s/# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "$OUT_DIR/.config"
                 if ! grep -q "CONFIG_${opt}=y" "$OUT_DIR/.config"; then
                   echo "CONFIG_${opt}=y" >> "$OUT_DIR/.config"
