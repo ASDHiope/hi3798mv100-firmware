@@ -160,23 +160,12 @@ jobs:
 
           echo "=== Check SDK build output ==="
           SDK_KERNEL_BIN="out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin"
-          OUT_UIMAGE="out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y/arch/arm/boot/uImage"
-          SRC_UIMAGE="source/kernel/linux-4.4.y/arch/arm/boot/uImage"
 
-          KERNEL_BIN=""
-          for f in "$SDK_KERNEL_BIN" "$OUT_UIMAGE" "$SRC_UIMAGE"; do
-            if [ -f "$f" ]; then
-              echo "Found: $f"
-              KERNEL_BIN="$f"
-            fi
-          done
-
-          if [ -n "$KERNEL_BIN" ]; then
-            echo ""
+          if [ -f "$SDK_KERNEL_BIN" ]; then
             echo "Version strings in kernel:"
-            strings "$KERNEL_BIN" | grep "4.4.35" | head -5
+            strings "$SDK_KERNEL_BIN" | grep "4.4.35" | head -5
 
-            if strings "$KERNEL_BIN" | grep -q "4.4.35_ecoo"; then
+            if strings "$SDK_KERNEL_BIN" | grep -q "4.4.35_ecoo"; then
               echo "OK: Version is 4.4.35_ecoo_81082668 - no rebuild needed!"
               echo "NEED_REBUILD=0" >> $GITHUB_ENV
               exit 0
@@ -184,17 +173,10 @@ jobs:
           fi
 
           echo ""
-          echo "=== Version is wrong, patching .config and rebuilding ==="
+          echo "=== Version is wrong, patching .config and rebuilding with SDK ==="
           echo "NEED_REBUILD=1" >> $GITHUB_ENV
 
-          OUT_KERNEL_DIR="out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y"
-          SRC_KERNEL_DIR="source/kernel/linux-4.4.y"
-
-          WORK_DIR="$OUT_KERNEL_DIR"
-          if [ ! -d "$WORK_DIR" ]; then
-            WORK_DIR="$SRC_KERNEL_DIR"
-          fi
-          echo "Working directory: $WORK_DIR"
+          OUT_DIR="out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y"
 
           echo ""
           echo "=== Patching ALL .config files ==="
@@ -214,72 +196,56 @@ jobs:
           done
 
           echo ""
-          echo "=== Delete cached version files ==="
+          echo "=== Delete ALL cached version files in out/ and source/ ==="
           find . -name "kernel.release" -path "*/linux-4.4.y/*" -delete 2>/dev/null
           find . -name "utsrelease.h" -path "*/linux-4.4.y/*" -delete 2>/dev/null
           find . -name "compile.h" -path "*/generated/*" -delete 2>/dev/null
 
           echo ""
-          echo "=== Determine CROSS_COMPILE for rebuild ==="
-          if [ -n "${SDK_CROSS}" ]; then
-            CC="${SDK_CROSS}"
-            echo "Using SDK cross-compiler from build log: $CC"
-          elif [ -n "${TOOLCHAIN_BIN}" ]; then
-            CC="arm-histbv310-linux-"
-            echo "Using toolchain from SDK: $CC"
-          else
-            echo "Searching for SDK cross-compiler..."
-            CC=$(find tools/ -name "arm-his*-gcc" -type f 2>/dev/null | head -1 | sed 's/-gcc$//')
-            if [ -z "$CC" ]; then
-              CC="arm-linux-gnueabihf-"
-              echo "WARNING: SDK toolchain not found, using system: $CC"
-            else
-              echo "Found: $CC"
-            fi
+          echo "=== Delete version object files in out/ directory ==="
+          if [ -d "$OUT_DIR" ]; then
+            rm -f "$OUT_DIR/init/version.o" "$OUT_DIR/init/version.s"
+            rm -f "$OUT_DIR/init/do_mounts.o"
+            rm -f "$OUT_DIR/drivers/base/devtmpfs.o" "$OUT_DIR/drivers/base/devtmpfs.s"
+            rm -f "$OUT_DIR/include/config/kernel.release"
+            rm -f "$OUT_DIR/include/generated/utsrelease.h"
+            rm -f "$OUT_DIR/include/generated/compile.h"
+            echo "Deleted cached files in $OUT_DIR"
           fi
-          echo "CROSS_COMPILE for rebuild: $CC"
 
           echo ""
-          echo "=== Running oldconfig ==="
-          cd "$WORK_DIR"
-          make ARCH=arm CROSS_COMPILE=$CC oldconfig </dev/null 2>&1 || true
+          echo "=== Verify .config in out/ directory ==="
+          if [ -f "$OUT_DIR/.config" ]; then
+            echo "out/ .config LOCALVERSION:"
+            grep "CONFIG_LOCALVERSION=" "$OUT_DIR/.config"
+            echo "out/ .config DEVTMPFS:"
+            grep "CONFIG_DEVTMPFS" "$OUT_DIR/.config"
+          fi
 
           echo ""
-          echo "After oldconfig:"
-          grep "CONFIG_LOCALVERSION=" .config
-          grep "CONFIG_DEVTMPFS" .config
-
-          echo ""
-          echo "=== Force rebuild version and devtmpfs objects ==="
-          rm -f init/version.o init/version.s init/do_mounts.o
-          rm -f drivers/base/devtmpfs.o drivers/base/devtmpfs.s
-          rm -f include/config/kernel.release
-          rm -f include/generated/utsrelease.h include/generated/compile.h
-
-          echo ""
-          echo "=== Rebuilding kernel with SDK cross-compiler ==="
-          make ARCH=arm CROSS_COMPILE=$CC -j$(nproc) 2>&1 | tail -30
-          make ARCH=arm CROSS_COMPILE=$CC uImage 2>&1 || true
+          echo "=== Rebuilding kernel with SDK make linux ==="
+          source env.sh
+          make linux -j$(nproc) 2>&1 | tail -20
 
           echo ""
           echo "=== Verify rebuilt kernel ==="
-          for uimg in arch/arm/boot/uImage ../source/kernel/linux-4.4.y/arch/arm/boot/uImage; do
-            if [ -f "$uimg" ]; then
-              echo "Found uImage: $uimg"
-              strings "$uimg" | grep "4.4.35" | head -5
-              if strings "$uimg" | grep -q "4.4.35_ecoo"; then
-                echo "OK: Version is 4.4.35_ecoo_81082668"
-              else
-                echo "FAIL: Version is still NOT 4.4.35_ecoo_81082668"
-              fi
-              if strings "$uimg" | grep -qi "devtmpfs"; then
-                echo "OK: devtmpfs found"
-              else
-                echo "FAIL: devtmpfs NOT found"
-              fi
-              break
+          if [ -f "$SDK_KERNEL_BIN" ]; then
+            echo "Version strings:"
+            strings "$SDK_KERNEL_BIN" | grep "4.4.35" | head -5
+            if strings "$SDK_KERNEL_BIN" | grep -q "4.4.35_ecoo"; then
+              echo "OK: Version is 4.4.35_ecoo_81082668"
+            else
+              echo "FAIL: Version is still NOT 4.4.35_ecoo_81082668"
             fi
-          done
+            if strings "$SDK_KERNEL_BIN" | grep -qi "devtmpfs"; then
+              echo "OK: devtmpfs found"
+            else
+              echo "FAIL: devtmpfs NOT found"
+            fi
+          else
+            echo "ERROR: Kernel binary not found!"
+            find . -name "hi_kernel*" -o -name "uImage" 2>/dev/null | head -10
+          fi
 
       - name: Prepare artifacts
         run: |
