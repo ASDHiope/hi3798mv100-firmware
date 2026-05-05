@@ -43,33 +43,24 @@ jobs:
         run: |
           cd HiSTBLinuxV100R005C00SPC060
 
-          echo "=== Step 1: Find hi3798mv100 defconfig ==="
-          DEFCONFIG=""
-          for f in $(find . -name "*hi3798mv100*defconfig*" -path "*/arm/*" -type f 2>/dev/null); do
-            echo "Found: $f"
-            DEFCONFIG="$f"
-          done
-          if [ -z "$DEFCONFIG" ]; then
-            echo "Searching all defconfig files..."
-            find . -name "*defconfig*" -path "*/arm/configs/*" -type f 2>/dev/null | head -20
-            DEFCONFIG=$(find . -name "*hi3798mv100*defconfig*" -type f 2>/dev/null | head -1)
-          fi
-          echo "Using defconfig: $DEFCONFIG"
+          echo "=== Step 1: Find and patch ALL hi3798mv100 defconfig files ==="
+          DEFCONFIGS=$(find . -name "*hi3798mv100*defconfig*" -path "*/arm/*" -type f 2>/dev/null)
+          echo "Found defconfig files:"
+          echo "$DEFCONFIGS"
 
           echo ""
-          echo "=== Step 2: Patch defconfig - LOCALVERSION and DEVTMPFS ==="
-          if [ -n "$DEFCONFIG" ] && [ -f "$DEFCONFIG" ]; then
-            echo "Before patching:"
-            grep "LOCALVERSION" "$DEFCONFIG" || echo "(no LOCALVERSION)"
-            grep "DEVTMPFS" "$DEFCONFIG" || echo "(no DEVTMPFS)"
+          echo "=== Patching ALL defconfig files ==="
+          for DEFCONFIG in $DEFCONFIGS; do
+            echo "Patching: $DEFCONFIG"
+            echo "  Before:"
+            grep "LOCALVERSION" "$DEFCONFIG" 2>/dev/null || echo "  (no LOCALVERSION)"
+            grep "DEVTMPFS" "$DEFCONFIG" 2>/dev/null || echo "  (no DEVTMPFS)"
 
             sed -i 's/CONFIG_LOCALVERSION="_s40"/CONFIG_LOCALVERSION="_ecoo_81082668"/' "$DEFCONFIG"
             sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$DEFCONFIG"
-
             if ! grep -q 'CONFIG_LOCALVERSION=' "$DEFCONFIG"; then
               echo 'CONFIG_LOCALVERSION="_ecoo_81082668"' >> "$DEFCONFIG"
             fi
-
             sed -i 's/# CONFIG_DEVTMPFS is not set/CONFIG_DEVTMPFS=y/' "$DEFCONFIG"
             if ! grep -q "CONFIG_DEVTMPFS=y" "$DEFCONFIG"; then
               echo "CONFIG_DEVTMPFS=y" >> "$DEFCONFIG"
@@ -78,13 +69,10 @@ jobs:
               echo "CONFIG_DEVTMPFS_MOUNT=y" >> "$DEFCONFIG"
             fi
 
-            echo ""
-            echo "After patching:"
-            grep "LOCALVERSION" "$DEFCONFIG"
-            grep "DEVTMPFS" "$DEFCONFIG"
-          else
-            echo "WARNING: defconfig not found, will patch .config after build"
-          fi
+            echo "  After:"
+            grep "LOCALVERSION" "$DEFCONFIG" 2>/dev/null
+            grep "DEVTMPFS" "$DEFCONFIG" 2>/dev/null
+          done
 
           echo ""
           echo "=== Step 3: Patch cfg.mak and SDK config files ==="
