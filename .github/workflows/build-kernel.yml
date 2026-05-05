@@ -207,21 +207,42 @@ jobs:
                 MSP_LIB="$d"
               fi
             fi
-          done
+          done || true
           if [ -z "$MSP_LIB" ]; then
             echo "No SDK libs found in lib/ dirs, searching all files..."
-            find . -name "libhi_msp*" -o -name "libhi_vo*" -o -name "libhi_hdmi*" -o -name "libhi_sys*" 2>/dev/null | grep -v ".git"
+            find . \( -name "libhi_msp*" -o -name "libhi_vo*" -o -name "libhi_hdmi*" -o -name "libhi_sys*" \) ! -path "*/.git/*" 2>/dev/null || true
           fi
+
+          echo ""
+          echo "=== Trying to build SDK MSP libraries ==="
+          make msp -j$(nproc) 2>&1 | tail -10 || {
+            echo "WARNING: make msp failed, trying make all..."
+            make all -j$(nproc) 2>&1 | tail -10 || {
+              echo "WARNING: make all also failed, will use standalone dlopen build"
+            }
+          } || true
+
+          echo ""
+          echo "Re-searching for SDK libraries after build..."
+          for d in $(find . -type d -name "lib" 2>/dev/null | grep -v ".git"); do
+            if ls "$d"/libhi_* 2>/dev/null >/dev/null; then
+              echo "Found SDK libs in: $d"
+              ls -lh "$d"/libhi_* 2>/dev/null
+              if [ -z "$MSP_LIB" ]; then
+                MSP_LIB="$d"
+              fi
+            fi
+          done || true
 
           echo ""
           echo "=== Building SDK sample programs ==="
           make sample -j$(nproc) 2>&1 | tail -20 || {
             echo "WARNING: make sample failed"
-          }
+          } || true
 
           echo ""
           echo "=== Checking for sample binaries ==="
-          find "$OUT_DIR" -name "sample_*" -type f -executable 2>/dev/null | head -20
+          find "$OUT_DIR" -name "sample_*" -type f -executable 2>/dev/null | head -20 || true
 
           echo ""
           echo "=== Building display init program ==="
@@ -229,26 +250,10 @@ jobs:
 
           cp ../src/hi_display_init.c /tmp/hi_display_init.c
 
-          if [ -n "$MSP_INC" ] && [ -n "$MSP_LIB" ]; then
-            echo "Compiling with SDK headers and libraries..."
-            ${SDK_CROSS}gcc -o output/bin/hi_display_init /tmp/hi_display_init.c \
-              -I"$MSP_INC" -L"$MSP_LIB" -lhi_msp -lpthread -lm -ldl \
-              -Wl,-rpath,/opt/hisilicon/lib 2>&1 || {
-              echo "Dynamic linking failed, trying static..."
-              ${SDK_CROSS}gcc -o output/bin/hi_display_init /tmp/hi_display_init.c \
-                -I"$MSP_INC" -L"$MSP_LIB" -lhi_msp -lpthread -lm -ldl -static 2>&1 || {
-                echo "Static linking also failed, building standalone (dlopen-based)..."
-                ${SDK_CROSS}gcc -o output/bin/hi_display_init /tmp/hi_display_init.c -ldl -lpthread 2>&1 || {
-                  echo "All compilation attempts failed"
-                }
-              }
-            }
-          else
-            echo "No SDK headers/libs found, building standalone dlopen-based program..."
-            ${SDK_CROSS}gcc -o output/bin/hi_display_init /tmp/hi_display_init.c -ldl -lpthread 2>&1 || {
-              echo "WARNING: Failed to compile display init program"
-            }
-          fi
+          echo "Building standalone dlopen-based program (no SDK libs needed at compile time)..."
+          ${SDK_CROSS}gcc -o output/bin/hi_display_init /tmp/hi_display_init.c -ldl -lpthread 2>&1 || {
+            echo "WARNING: Failed to compile display init program"
+          }
 
           if [ -f output/bin/hi_display_init ]; then
             echo "Display init program built successfully"
@@ -334,15 +339,27 @@ jobs:
           LIB_DIR="output/lib"
           mkdir -p "$LIB_DIR"
 
+          echo "Searching in out/ directory..."
           find "$OUT_DIR" -name "libhi_*.so*" -type f 2>/dev/null | while read f; do
             echo "  Found: $f"
             cp "$f" "$LIB_DIR/" 2>/dev/null || true
-          done
+          done || true
 
           find "$OUT_DIR" -name "libhi_*.so" -type l 2>/dev/null | while read f; do
             echo "  Found symlink: $f"
             cp -P "$f" "$LIB_DIR/" 2>/dev/null || true
-          done
+          done || true
+
+          echo "Searching in entire SDK..."
+          find HiSTBLinuxV100R005C00SPC060 -name "libhi_*.so*" -type f 2>/dev/null | grep -v ".git" | while read f; do
+            echo "  Found: $f"
+            cp "$f" "$LIB_DIR/" 2>/dev/null || true
+          done || true
+
+          find HiSTBLinuxV100R005C00SPC060 -name "libhi_*.a" -type f 2>/dev/null | grep -v ".git" | while read f; do
+            echo "  Found static: $f"
+            cp "$f" "$LIB_DIR/" 2>/dev/null || true
+          done || true
 
           echo ""
           echo "Binaries collected: $(ls "$BIN_DIR/" 2>/dev/null | wc -l)"
