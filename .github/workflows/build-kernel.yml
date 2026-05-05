@@ -8,7 +8,7 @@ on:
 jobs:
   build-kernel:
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -162,6 +162,135 @@ jobs:
             fi
           fi
 
+      - name: Build SDK sample programs
+        run: |
+          cd HiSTBLinuxV100R005C00SPC060
+          source env.sh
+
+          echo "=== Building SDK sample programs ==="
+          make sample -j$(nproc) 2>&1 | tail -20 || {
+            echo "WARNING: make sample failed, trying alternative approaches..."
+          }
+
+          echo ""
+          echo "=== Checking for sample binaries ==="
+          OUT_DIR="out/hi3798mv100/hi3798mdmo1g"
+          find "$OUT_DIR" -name "sample_*" -type f -executable 2>/dev/null | head -20
+          find "$OUT_DIR" -name "boot_logo" -o -name "hi_bootlogo" 2>/dev/null | head -5
+          find "$OUT_DIR" -name "*.sh" -path "*/init*" 2>/dev/null | head -10
+
+      - name: Build display init program
+        run: |
+          cd HiSTBLinuxV100R005C00SPC060
+
+          SDK_CROSS=$(find tools/ -name "arm-his*-linux" -type d 2>/dev/null | head -1)/bin/arm-histbv310-linux-
+          if [ ! -x "${SDK_CROSS}gcc" ]; then
+            SDK_CROSS="arm-histbv310-linux-"
+          fi
+          echo "Using cross-compiler: ${SDK_CROSS}gcc"
+          ${SDK_CROSS}gcc --version 2>/dev/null | head -1 || echo "Cross-compiler not found!"
+
+          echo ""
+          echo "=== Looking for SDK MPP headers ==="
+          find source -name "hi_comm_vo.h" -o -name "hi_comm_hdmi.h" -o -name "hi_mpi_vo.h" -o -name "hi_mpi_hdmi.h" 2>/dev/null | head -10
+          find source -name "hi_type.h" 2>/dev/null | head -5
+          find source -name "hi_common.h" -path "*/include/*" 2>/dev/null | head -5
+
+          echo ""
+          echo "=== Looking for SDK MPP libraries ==="
+          OUT_DIR="out/hi3798mv100/hi3798mdmo1g"
+          find "$OUT_DIR" -name "libhi_*.so*" -o -name "libhi_*.a" 2>/dev/null | head -20
+          find source -name "libhi_*.so*" -o -name "libhi_*.a" 2>/dev/null | head -20
+
+          echo ""
+          echo "=== Writing display init program ==="
+          mkdir -p output/bin
+
+          cat > /tmp/hi_display_init.c << 'INITEOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <errno.h>
+
+int main(int argc, char *argv[])
+{
+    printf("Hi3798MV100 Display Initialization\n");
+
+    int resolution = 0;
+    if (argc > 1) {
+        if (strcmp(argv[1], "720p") == 0 || strcmp(argv[1], "720P") == 0) {
+            resolution = 1;
+        } else if (strcmp(argv[1], "480p") == 0 || strcmp(argv[1], "480P") == 0) {
+            resolution = 2;
+        } else {
+            resolution = 0;
+        }
+    }
+
+    printf("Resolution: %s\n", resolution == 0 ? "1080p60" : (resolution == 1 ? "720p60" : "480p60"));
+
+    printf("\nSearching for SDK sample programs...\n");
+    const char *sample_paths[] = {
+        "/opt/hisilicon/bin/sample_vo",
+        "/opt/hisilicon/bin/sample_hdmi",
+        "/usr/local/bin/sample_vo",
+        "/usr/local/bin/sample_hdmi",
+        "/tmp/bin/sample_vo",
+        "/tmp/bin/sample_hdmi",
+        NULL
+    };
+
+    int i;
+    for (i = 0; sample_paths[i] != NULL; i++) {
+        if (access(sample_paths[i], X_OK) == 0) {
+            printf("Found sample program: %s\n", sample_paths[i]);
+            printf("Please run it manually to initialize the display.\n");
+            return 0;
+        }
+    }
+
+    printf("No SDK sample program found.\n");
+    printf("\nAttempting direct VOU/HDMI initialization via device nodes...\n");
+
+    int vou_fd = open("/dev/hi_vou", O_RDWR);
+    if (vou_fd < 0) {
+        printf("Cannot open /dev/hi_vou: %s\n", strerror(errno));
+        printf("VOU device not available. Display drivers may not be loaded.\n");
+        return 1;
+    }
+    printf("/dev/hi_vou opened successfully\n");
+    close(vou_fd);
+
+    int hdmi_fd = open("/dev/hi_hdmi", O_RDWR);
+    if (hdmi_fd < 0) {
+        printf("Cannot open /dev/hi_hdmi: %s\n", strerror(errno));
+    } else {
+        printf("/dev/hi_hdmi opened successfully\n");
+        close(hdmi_fd);
+    }
+
+    printf("\nNOTE: Full display initialization requires the HiSilicon MPP API.\n");
+    printf("The SDK sample programs (sample_vo, sample_hdmi) can do this.\n");
+    printf("Alternatively, run the following on a system with the SDK:\n");
+    printf("  1. sample_vo -m 0   (initialize VOU with HDMI 1080p60)\n");
+    printf("  2. Or use HI_MPI_VO_Enable + HI_MPI_HDMI_Start APIs\n");
+
+    return 0;
+}
+INITEOF
+
+          ${SDK_CROSS}gcc -o output/bin/hi_display_init /tmp/hi_display_init.c -static 2>&1 || {
+            echo "WARNING: Failed to compile display init program"
+          }
+
+          if [ -f output/bin/hi_display_init ]; then
+            echo "Display init program built successfully"
+            file output/bin/hi_display_init
+          fi
+
       - name: Prepare and upload artifacts
         run: |
           mkdir -p output
@@ -207,15 +336,57 @@ jobs:
           done
 
           echo ""
-          echo "Searching for pre-built HiSilicon KO modules..."
-          find HiSTBLinuxV100R005C00SPC060/source -name "hi_*.ko" -o -name "hifb.ko" -o -name "mali.ko" 2>/dev/null | while read ko; do
-            echo "  Found: $ko"
-            cp "$ko" "$KO_DIR/" 2>/dev/null || true
+          echo "KO modules collected: $(ls "$KO_DIR"/*.ko 2>/dev/null | wc -l)"
+
+          echo ""
+          echo "=== Collecting SDK sample programs and binaries ==="
+          BIN_DIR="output/bin"
+          mkdir -p "$BIN_DIR"
+
+          echo "Searching for sample programs..."
+          find "$OUT_DIR" -name "sample_*" -type f -executable 2>/dev/null | while read f; do
+            echo "  Found: $f"
+            cp "$f" "$BIN_DIR/" 2>/dev/null || true
+          done
+
+          echo "Searching for boot logo programs..."
+          find "$OUT_DIR" \( -name "boot_logo" -o -name "hi_bootlogo" -o -name "hisi_logo*" \) -type f 2>/dev/null | while read f; do
+            echo "  Found: $f"
+            cp "$f" "$BIN_DIR/" 2>/dev/null || true
+          done
+
+          echo "Searching for init scripts..."
+          find "$OUT_DIR" -name "*.sh" -path "*/init*" -type f 2>/dev/null | while read f; do
+            echo "  Found: $f"
+            cp "$f" "$BIN_DIR/" 2>/dev/null || true
+          done
+          find "$OUT_DIR" -name "hi_init.sh" -type f 2>/dev/null | while read f; do
+            echo "  Found: $f"
+            cp "$f" "$BIN_DIR/" 2>/dev/null || true
           done
 
           echo ""
-          echo "KO modules collected: $(ls "$KO_DIR"/*.ko 2>/dev/null | wc -l)"
-          ls -lh "$KO_DIR/" 2>/dev/null || echo "No KO modules found"
+          echo "=== Collecting SDK shared libraries ==="
+          LIB_DIR="output/lib"
+          mkdir -p "$LIB_DIR"
+
+          find "$OUT_DIR" -name "libhi_*.so*" -type f 2>/dev/null | while read f; do
+            echo "  Found: $f"
+            cp "$f" "$LIB_DIR/" 2>/dev/null || true
+          done
+
+          find "$OUT_DIR" -name "libhi_*.so" -type l 2>/dev/null | while read f; do
+            echo "  Found symlink: $f"
+            cp -P "$f" "$LIB_DIR/" 2>/dev/null || true
+          done
+
+          echo ""
+          echo "Binaries collected: $(ls "$BIN_DIR/" 2>/dev/null | wc -l)"
+          ls -lh "$BIN_DIR/" 2>/dev/null || echo "No binaries found"
+
+          echo ""
+          echo "Libraries collected: $(ls "$LIB_DIR/" 2>/dev/null | wc -l)"
+          ls -lh "$LIB_DIR/" 2>/dev/null || echo "No libraries found"
 
           echo ""
           echo "=== Final verification ==="
