@@ -98,10 +98,81 @@ jobs:
             exit 1
           fi
 
+      - name: Fix kernel config for original firmware compatibility
+        run: |
+          SDK_KERNEL="HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y"
+          SDK_CFG="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y"
+
+          echo "=== Fix 1: Kernel version string ==="
+          echo "Original kernel: 4.4.35_ecoo_81082668"
+          echo "SDK default: 4.4.35_s40"
+          echo ""
+          echo "Setting CONFIG_LOCALVERSION to match original firmware..."
+          echo "CONFIG_LOCALVERSION=\"_ecoo_81082668\"" >> "${SDK_KERNEL}/.config" 2>/dev/null || true
+
+          echo ""
+          echo "=== Fix 2: Memory configuration ==="
+          echo "Original bootargs: mem=1G mmz=ddr,0,0,60M"
+          echo "SDK default: mem=512M mmz=ddr,0,0,48M"
+          echo ""
+
+          echo "Fixing bootargs in SDK board config..."
+          BOARD_CFG="${SDK_KERNEL}/arch/arm/configs/hi3798mv100_defconfig"
+          if [ -f "$BOARD_CFG" ]; then
+            sed -i 's/mem=512M/mem=1G/g' "$BOARD_CFG" 2>/dev/null || true
+            sed -i 's/mem=384M/mem=1G/g' "$BOARD_CFG" 2>/dev/null || true
+            sed -i 's/mem=768M/mem=1G/g' "$BOARD_CFG" 2>/dev/null || true
+            sed -i 's/mmz=ddr,0,0,48M/mmz=ddr,0,0,60M/g' "$BOARD_CFG" 2>/dev/null || true
+            sed -i 's/mmz=ddr,0,0,32M/mmz=ddr,0,0,60M/g' "$BOARD_CFG" 2>/dev/null || true
+            echo "  Fixed defconfig"
+          fi
+
+          echo "Fixing bootargs in SDK common config..."
+          for f in $(find HiSTBLinuxV100R005C00SPC060/ -name "*.cfg" -o -name "*.mak" -o -name "*.config" 2>/dev/null | head -50); do
+            if grep -q "mem=512M\|mem=384M\|mmz=ddr,0,0,48M\|mmz=ddr,0,0,32M" "$f" 2>/dev/null; then
+              echo "  Fixing $f"
+              sed -i 's/mem=512M/mem=1G/g' "$f" 2>/dev/null || true
+              sed -i 's/mem=384M/mem=1G/g' "$f" 2>/dev/null || true
+              sed -i 's/mem=768M/mem=1G/g' "$f" 2>/dev/null || true
+              sed -i 's/mmz=ddr,0,0,48M/mmz=ddr,0,0,60M/g' "$f" 2>/dev/null || true
+              sed -i 's/mmz=ddr,0,0,32M/mmz=ddr,0,0,60M/g' "$f" 2>/dev/null || true
+            fi
+          done
+
+          echo ""
+          echo "=== Fix 3: DTS bootargs ==="
+          DTS_FILE="${SDK_KERNEL}/arch/arm/boot/dts/hi3798mv100.dts"
+          if [ -f "$DTS_FILE" ]; then
+            echo "Ensuring DTS has correct bootargs..."
+            sed -i 's/mem=512M/mem=1G/g' "$DTS_FILE" 2>/dev/null || true
+            sed -i 's/mem=384M/mem=1G/g' "$DTS_FILE" 2>/dev/null || true
+            sed -i 's/mmz=ddr,0,0,48M/mmz=ddr,0,0,60M/g' "$DTS_FILE" 2>/dev/null || true
+            echo "  DTS bootargs fixed"
+          fi
+
+          echo ""
+          echo "=== Verification ==="
+          echo "Kernel version will be: $(grep CONFIG_LOCALVERSION ${SDK_KERNEL}/.config 2>/dev/null || echo 'not set yet')"
+          echo "DTS bootargs: $(grep bootargs ${DTS_FILE} 2>/dev/null | head -1)"
+
       - name: Build kernel
         run: |
           cd HiSTBLinuxV100R005C00SPC060
           source env.sh
+
+          SDK_OUT_KERNEL="out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y"
+
+          echo "=== Pre-build: Fix .config after SDK generates it ==="
+          make linux -j$(nproc) 2>&1 | head -5 || true
+
+          if [ -f "${SDK_OUT_KERNEL}/.config" ]; then
+            echo "Fixing LOCALVERSION in output .config..."
+            sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="_ecoo_81082668"/' "${SDK_OUT_KERNEL}/.config"
+            sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "${SDK_OUT_KERNEL}/.config" 2>/dev/null || true
+            echo "  LOCALVERSION set to _ecoo_81082668"
+          fi
+
+          echo "=== Continuing kernel build ==="
           make linux -j$(nproc) 2>&1 | tee build.log
 
       - name: Prepare artifacts
@@ -119,6 +190,15 @@ jobs:
             find HiSTBLinuxV100R005C00SPC060/source/kernel/ -name "zImage" -type f 2>/dev/null || true
             echo "ERROR: Kernel image not found in expected location"
             exit 1
+          fi
+
+          echo "=== Verifying kernel version string ==="
+          strings output/hi_kernel_new.bin | grep "4.4.35" | head -5 || true
+          if strings output/hi_kernel_new.bin | grep -q "4.4.35_ecoo"; then
+            echo "OK: Kernel version matches original firmware (4.4.35_ecoo_81082668)"
+          else
+            echo "WARNING: Kernel version does NOT match original firmware!"
+            echo "HiSilicon KO modules may not load. Expected: 4.4.35_ecoo_81082668"
           fi
 
           if [ -f "${SDK_OUT}/hi3798mv100.dtb" ]; then
