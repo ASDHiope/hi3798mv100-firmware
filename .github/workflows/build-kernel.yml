@@ -156,13 +156,27 @@ jobs:
         run: |
           cd HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y
 
-          echo "=== Distclean and full rebuild ==="
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- distclean 2>&1 | tail -3
+          echo "=== Saving patched .config to /tmp BEFORE distclean ==="
+          if [ ! -f .config ]; then
+            echo "ERROR: .config not found in kernel source tree!"
+            find ../../ -name ".config" -type f 2>/dev/null
+            exit 1
+          fi
+          cp .config /tmp/patched_kernel.config
+          echo "Saved .config ($(wc -l < /tmp/patched_kernel.config) lines)"
+          grep "CONFIG_LOCALVERSION=" /tmp/patched_kernel.config
+          grep "CONFIG_DEVTMPFS" /tmp/patched_kernel.config
 
-          echo "Restoring patched .config..."
-          cp ../../out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y/.config .config 2>/dev/null || true
+          echo ""
+          echo "=== Distclean ==="
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- distclean 2>&1 | tail -5
+
+          echo ""
+          echo "=== Restoring patched .config from /tmp ==="
+          cp /tmp/patched_kernel.config .config
+
           if ! grep -q "CONFIG_LOCALVERSION.*ecoo" .config 2>/dev/null; then
-            echo "ERROR: .config lost after distclean!"
+            echo "ERROR: .config lost ecoo version after restore!"
             exit 1
           fi
 
