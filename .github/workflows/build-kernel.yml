@@ -155,6 +155,47 @@ jobs:
           echo "Kernel version will be: $(grep CONFIG_LOCALVERSION ${SDK_KERNEL}/.config 2>/dev/null || echo 'not set yet')"
           echo "DTS bootargs: $(grep bootargs ${DTS_FILE} 2>/dev/null | head -1)"
 
+          echo ""
+          echo "=== Fix 4: Critical kernel config options ==="
+          DEFCONFIG="${SDK_KERNEL}/arch/arm/configs/hi3798mv100_defconfig"
+          if [ ! -f "$DEFCONFIG" ]; then
+            DEFCONFIG=$(find ${SDK_KERNEL}/arch/arm/configs/ -name "*hi3798*" | head -1)
+          fi
+
+          if [ -f "$DEFCONFIG" ]; then
+            echo "Patching defconfig: $DEFCONFIG"
+
+            grep -q "CONFIG_DEVTMPFS=y" "$DEFCONFIG" || echo "CONFIG_DEVTMPFS=y" >> "$DEFCONFIG"
+            grep -q "CONFIG_DEVTMPFS_MOUNT=y" "$DEFCONFIG" || echo "CONFIG_DEVTMPFS_MOUNT=y" >> "$DEFCONFIG"
+
+            grep -q "CONFIG_TMPFS=y" "$DEFCONFIG" || echo "CONFIG_TMPFS=y" >> "$DEFCONFIG"
+
+            grep -q "CONFIG_FUTEX=y" "$DEFCONFIG" || echo "CONFIG_FUTEX=y" >> "$DEFCONFIG"
+
+            grep -q "CONFIG_EPOLL=y" "$DEFCONFIG" || echo "CONFIG_EPOLL=y" >> "$DEFCONFIG"
+
+            grep -q "CONFIG_SIGNALFD=y" "$DEFCONFIG" || echo "CONFIG_SIGNALFD=y" >> "$DEFCONFIG"
+            grep -q "CONFIG_TIMERFD=y" "$DEFCONFIG" || echo "CONFIG_TIMERFD=y" >> "$DEFCONFIG"
+            grep -q "CONFIG_EVENTFD=y" "$DEFCONFIG" || echo "CONFIG_EVENTFD=y" >> "$DEFCONFIG"
+
+            grep -q "CONFIG_INOTIFY_USER=y" "$DEFCONFIG" || echo "CONFIG_INOTIFY_USER=y" >> "$DEFCONFIG"
+
+            grep -q "CONFIG_FHANDLE=y" "$DEFCONFIG" || echo "CONFIG_FHANDLE=y" >> "$DEFCONFIG"
+
+            grep -q "CONFIG_MULTIUSER=y" "$DEFCONFIG" || echo "CONFIG_MULTIUSER=y" >> "$DEFCONFIG"
+
+            grep -q "CONFIG_SYSFS=y" "$DEFCONFIG" || echo "CONFIG_SYSFS=y" >> "$DEFCONFIG"
+
+            sed -i 's/# CONFIG_DEVTMPFS is not set/CONFIG_DEVTMPFS=y/' "$DEFCONFIG" 2>/dev/null || true
+            sed -i 's/# CONFIG_DEVTMPFS_MOUNT is not set/CONFIG_DEVTMPFS_MOUNT=y/' "$DEFCONFIG" 2>/dev/null || true
+            sed -i 's/# CONFIG_TMPFS is not set/CONFIG_TMPFS=y/' "$DEFCONFIG" 2>/dev/null || true
+            sed -i 's/# CONFIG_FHANDLE is not set/CONFIG_FHANDLE=y/' "$DEFCONFIG" 2>/dev/null || true
+
+            echo "  Critical config options added"
+          else
+            echo "  WARNING: defconfig not found, will patch .config after build starts"
+          fi
+
       - name: Build kernel
         run: |
           cd HiSTBLinuxV100R005C00SPC060
@@ -170,6 +211,17 @@ jobs:
             sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="_ecoo_81082668"/' "${SDK_OUT_KERNEL}/.config"
             sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "${SDK_OUT_KERNEL}/.config" 2>/dev/null || true
             echo "  LOCALVERSION set to _ecoo_81082668"
+
+            echo "Ensuring critical config options in output .config..."
+            sed -i 's/# CONFIG_DEVTMPFS is not set/CONFIG_DEVTMPFS=y/' "${SDK_OUT_KERNEL}/.config" 2>/dev/null || true
+            sed -i 's/# CONFIG_DEVTMPFS_MOUNT is not set/CONFIG_DEVTMPFS_MOUNT=y/' "${SDK_OUT_KERNEL}/.config" 2>/dev/null || true
+            sed -i 's/# CONFIG_TMPFS is not set/CONFIG_TMPFS=y/' "${SDK_OUT_KERNEL}/.config" 2>/dev/null || true
+            sed -i 's/# CONFIG_FHANDLE is not set/CONFIG_FHANDLE=y/' "${SDK_OUT_KERNEL}/.config" 2>/dev/null || true
+            grep -q "CONFIG_DEVTMPFS=y" "${SDK_OUT_KERNEL}/.config" || echo "CONFIG_DEVTMPFS=y" >> "${SDK_OUT_KERNEL}/.config"
+            grep -q "CONFIG_DEVTMPFS_MOUNT=y" "${SDK_OUT_KERNEL}/.config" || echo "CONFIG_DEVTMPFS_MOUNT=y" >> "${SDK_OUT_KERNEL}/.config"
+            grep -q "CONFIG_TMPFS=y" "${SDK_OUT_KERNEL}/.config" || echo "CONFIG_TMPFS=y" >> "${SDK_OUT_KERNEL}/.config"
+            grep -q "CONFIG_FHANDLE=y" "${SDK_OUT_KERNEL}/.config" || echo "CONFIG_FHANDLE=y" >> "${SDK_OUT_KERNEL}/.config"
+            echo "  Critical options ensured"
           fi
 
           echo "=== Continuing kernel build ==="
