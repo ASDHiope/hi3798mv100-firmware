@@ -168,12 +168,12 @@ case "$1" in
 
         ERRORS=0
 
+        load_module hi_media.ko  || ERRORS=$((ERRORS+1))
         load_module hi_mmz.ko    || ERRORS=$((ERRORS+1))
-        load_module hi_media.ko  || true
         load_module hi_common.ko || ERRORS=$((ERRORS+1))
 
         if [ ${ERRORS} -gt 0 ]; then
-            log_error "Critical modules (hi_mmz/hi_common) failed, aborting"
+            log_error "Critical modules (hi_media/hi_mmz/hi_common) failed, aborting"
             exit 1
         fi
 
@@ -202,7 +202,7 @@ case "$1" in
         ;;
     stop)
         log_info "Unloading HiSilicon drivers..."
-        for m in mali hi_sync hi_pq hi_vpss hi_tde hi_fb hi_hdmi hi_vou hi_common hi_media hi_mmz; do
+        for m in mali hi_sync hi_pq hi_vpss hi_tde hi_fb hi_hdmi hi_vou hi_common hi_mmz hi_media; do
             if lsmod | grep -q "^${m}[[:space:]]"; then
                 rmmod "${m}" 2>/dev/null && log_info "Unloaded ${m}" || log_warn "Failed to unload ${m}"
             fi
