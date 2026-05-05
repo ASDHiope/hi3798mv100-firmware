@@ -39,65 +39,73 @@ jobs:
                 HiSTBLinuxV100R005C00SPC060
             }
 
-      - name: Patch SDK config, build and rebuild kernel
+      - name: Patch defconfig and SDK config BEFORE build
         run: |
           cd HiSTBLinuxV100R005C00SPC060
 
-          echo "============================================="
-          echo "Step 1: Find where _s40 is defined in SDK"
-          echo "============================================="
-          echo "Files containing _s40:"
-          grep -rn "_s40" \
-            --include="*.mak" --include="*.cfg" --include="*.h" --include="*.sh" \
-            --include="Makefile*" --include="Kconfig*" --include="defconfig" \
-            -l 2>/dev/null | head -20
-
-          echo ""
-          echo "Files containing LOCALVERSION:"
-          grep -rn "LOCALVERSION" \
-            --include="*.mak" --include="*.cfg" --include="*.h" --include="*.sh" \
-            --include="Makefile*" --include="Kconfig*" --include="defconfig" \
-            -l 2>/dev/null | head -20
-
-          echo ""
-          echo "Defconfig files:"
-          find . -name "*defconfig*" -path "*/arm/*" -type f 2>/dev/null | head -10
-
-          echo ""
-          echo "============================================="
-          echo "Step 2: Patch _s40 → _ecoo_81082668 in ALL SDK files"
-          echo "============================================="
-          PATCHED_COUNT=0
-          for f in $(grep -rl "_s40" \
-            --include="*.mak" --include="*.cfg" --include="*.h" --include="*.sh" \
-            --include="Makefile*" --include="Kconfig*" --include="defconfig" \
-            2>/dev/null | head -30); do
-            echo "  Patching: $f"
-            sed -i 's/_s40/_ecoo_81082668/g' "$f"
-            PATCHED_COUNT=$((PATCHED_COUNT + 1))
+          echo "=== Step 1: Find hi3798mv100 defconfig ==="
+          DEFCONFIG=""
+          for f in $(find . -name "*hi3798mv100*defconfig*" -path "*/arm/*" -type f 2>/dev/null); do
+            echo "Found: $f"
+            DEFCONFIG="$f"
           done
-          echo "Patched ${PATCHED_COUNT} files"
+          if [ -z "$DEFCONFIG" ]; then
+            echo "Searching all defconfig files..."
+            find . -name "*defconfig*" -path "*/arm/configs/*" -type f 2>/dev/null | head -20
+            DEFCONFIG=$(find . -name "*hi3798mv100*defconfig*" -type f 2>/dev/null | head -1)
+          fi
+          echo "Using defconfig: $DEFCONFIG"
 
           echo ""
-          echo "============================================="
-          echo "Step 3: Patch defconfig for DEVTMPFS"
-          echo "============================================="
-          for defconfig in $(find . -name "*defconfig*" -path "*/arm/*" -type f 2>/dev/null); do
-            echo "  Patching: $defconfig"
-            sed -i 's/# CONFIG_DEVTMPFS is not set/CONFIG_DEVTMPFS=y/' "$defconfig"
-            if ! grep -q "CONFIG_DEVTMPFS=y" "$defconfig"; then
-              echo "CONFIG_DEVTMPFS=y" >> "$defconfig"
+          echo "=== Step 2: Patch defconfig - LOCALVERSION and DEVTMPFS ==="
+          if [ -n "$DEFCONFIG" ] && [ -f "$DEFCONFIG" ]; then
+            echo "Before patching:"
+            grep "LOCALVERSION" "$DEFCONFIG" || echo "(no LOCALVERSION)"
+            grep "DEVTMPFS" "$DEFCONFIG" || echo "(no DEVTMPFS)"
+
+            sed -i 's/CONFIG_LOCALVERSION="_s40"/CONFIG_LOCALVERSION="_ecoo_81082668"/' "$DEFCONFIG"
+            sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$DEFCONFIG"
+
+            if ! grep -q 'CONFIG_LOCALVERSION=' "$DEFCONFIG"; then
+              echo 'CONFIG_LOCALVERSION="_ecoo_81082668"' >> "$DEFCONFIG"
             fi
-            if ! grep -q "CONFIG_DEVTMPFS_MOUNT=y" "$defconfig"; then
-              echo "CONFIG_DEVTMPFS_MOUNT=y" >> "$defconfig"
+
+            sed -i 's/# CONFIG_DEVTMPFS is not set/CONFIG_DEVTMPFS=y/' "$DEFCONFIG"
+            if ! grep -q "CONFIG_DEVTMPFS=y" "$DEFCONFIG"; then
+              echo "CONFIG_DEVTMPFS=y" >> "$DEFCONFIG"
             fi
-            sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$defconfig"
-          done
+            if ! grep -q "CONFIG_DEVTMPFS_MOUNT=y" "$DEFCONFIG"; then
+              echo "CONFIG_DEVTMPFS_MOUNT=y" >> "$DEFCONFIG"
+            fi
+
+            echo ""
+            echo "After patching:"
+            grep "LOCALVERSION" "$DEFCONFIG"
+            grep "DEVTMPFS" "$DEFCONFIG"
+          else
+            echo "WARNING: defconfig not found, will patch .config after build"
+          fi
 
           echo ""
-          echo "============================================="
-          echo "Step 4: Fix SDK missing files and copy DTS"
-          echo "============================================="
+          echo "=== Step 3: Patch cfg.mak and SDK config files ==="
+          CFG_MAK="configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak"
+          if [ -f "$CFG_MAK" ]; then
+            echo "Content of $CFG_MAK:"
+            cat "$CFG_MAK"
+            echo ""
+            grep -i "localversion\|_s40" "$CFG_MAK" && \
+              sed -i 's/_s40/_ecoo_81082668/g' "$CFG_MAK" || \
+              echo "No _s40 or LOCALVERSION in cfg.mak"
+          fi
+
+          echo ""
+          echo "=== Step 4: Search for any file that sets CONFIG_LOCALVERSION ==="
+          grep -rn 'CONFIG_LOCALVERSION' \
+            --include="*.mak" --include="*.cfg" --include="*.sh" --include="defconfig" \
+            2>/dev/null | head -20
+
+          echo ""
+          echo "=== Step 5: Fix SDK missing scripts and copy DTS ==="
           KERNEL_VERSION="4.4.35"
           SDK_KERNEL="source/kernel/linux-4.4.y"
 
@@ -116,138 +124,187 @@ jobs:
             fi
           fi
 
-          echo ""
-          echo "============================================="
-          echo "Step 5: Build kernel with SDK"
-          echo "============================================="
+      - name: Build kernel with SDK
+        run: |
+          cd HiSTBLinuxV100R005C00SPC060
           cp configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
           source env.sh
-          echo "CROSS_COMPILE = ${CROSS_COMPILE}"
-          echo "ARCH = ${ARCH}"
-          make linux -j$(nproc) 2>&1 | tail -10
+          make linux -j$(nproc) 2>&1 | tee /tmp/sdk_build.log | tail -10
 
           echo ""
-          echo "============================================="
-          echo "Step 6: Check SDK build output"
-          echo "============================================="
+          echo "=== Extract CROSS_COMPILE from build log ==="
+          SDK_CROSS=$(grep -oP 'CROSS_COMPILE=\K\S+' /tmp/sdk_build.log | head -1)
+          if [ -z "$SDK_CROSS" ]; then
+            SDK_CROSS=$(grep -oP 'CROSS_COMPILE=arm-\S+' /tmp/sdk_build.log | head -1 | sed 's/CROSS_COMPILE=//')
+          fi
+          echo "SDK cross-compiler prefix: ${SDK_CROSS}"
+          echo "SDK_CROSS=${SDK_CROSS}" >> $GITHUB_ENV
+
+          echo ""
+          echo "=== Find SDK toolchain path ==="
+          TOOLCHAIN_DIR=$(find tools/ -name "arm-his*-linux" -type d 2>/dev/null | head -1)
+          if [ -n "$TOOLCHAIN_DIR" ]; then
+            TOOLCHAIN_BIN="${TOOLCHAIN_DIR}/bin"
+            echo "Toolchain bin: ${TOOLCHAIN_BIN}"
+            ls "${TOOLCHAIN_BIN}/" | head -5
+            echo "${TOOLCHAIN_BIN}" >> $GITHUB_PATH
+            echo "TOOLCHAIN_BIN=${TOOLCHAIN_BIN}" >> $GITHUB_ENV
+          else
+            echo "Toolchain not found in tools/, searching elsewhere..."
+            find . -name "arm-his*-gcc" -type f 2>/dev/null | head -5
+          fi
+
+      - name: Verify and fix kernel version
+        run: |
+          cd HiSTBLinuxV100R005C00SPC060
+
+          echo "=== Check SDK build output ==="
           SDK_KERNEL_BIN="out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin"
-          UIMAGE="source/kernel/linux-4.4.y/arch/arm/boot/uImage"
+          OUT_UIMAGE="out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y/arch/arm/boot/uImage"
+          SRC_UIMAGE="source/kernel/linux-4.4.y/arch/arm/boot/uImage"
 
           KERNEL_BIN=""
-          if [ -f "$SDK_KERNEL_BIN" ]; then
-            KERNEL_BIN="$SDK_KERNEL_BIN"
-            echo "Found SDK kernel: $SDK_KERNEL_BIN"
-          fi
-          if [ -f "$UIMAGE" ]; then
-            echo "Found uImage: $UIMAGE"
-            if [ -z "$KERNEL_BIN" ]; then
-              KERNEL_BIN="$UIMAGE"
+          for f in "$SDK_KERNEL_BIN" "$OUT_UIMAGE" "$SRC_UIMAGE"; do
+            if [ -f "$f" ]; then
+              echo "Found: $f"
+              KERNEL_BIN="$f"
             fi
-          fi
+          done
 
           if [ -n "$KERNEL_BIN" ]; then
+            echo ""
             echo "Version strings in kernel:"
             strings "$KERNEL_BIN" | grep "4.4.35" | head -5
+
             if strings "$KERNEL_BIN" | grep -q "4.4.35_ecoo"; then
-              echo "OK: Version is 4.4.35_ecoo_81082668"
-              echo "SKIP_REBUILD=0" >> $GITHUB_ENV
-            else
-              echo "WARN: Version is NOT 4.4.35_ecoo_81082668, need post-build rebuild"
-              echo "SKIP_REBUILD=1" >> $GITHUB_ENV
+              echo "OK: Version is 4.4.35_ecoo_81082668 - no rebuild needed!"
+              echo "NEED_REBUILD=0" >> $GITHUB_ENV
+              exit 0
             fi
-          else
-            echo "ERROR: No kernel binary found!"
-            find . -name "uImage" -o -name "hi_kernel*" 2>/dev/null | head -10
-            echo "SKIP_REBUILD=1" >> $GITHUB_ENV
           fi
 
           echo ""
-          echo "============================================="
-          echo "Step 7: Post-build patch and rebuild (if needed)"
-          echo "============================================="
-          if [ "${SKIP_REBUILD}" = "1" ]; then
-            echo "Patching .config and rebuilding with SDK cross-compiler..."
+          echo "=== Version is wrong, patching .config and rebuilding ==="
+          echo "NEED_REBUILD=1" >> $GITHUB_ENV
 
-            KERNEL_SRC="source/kernel/linux-4.4.y"
+          OUT_KERNEL_DIR="out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y"
+          SRC_KERNEL_DIR="source/kernel/linux-4.4.y"
 
-            for cfgfile in $(find . -name ".config" -path "*/linux-4.4.y/*" -type f 2>/dev/null); do
-              echo "  Patching .config: $cfgfile"
-              sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="_ecoo_81082668"/' "$cfgfile"
-              if ! grep -q 'CONFIG_LOCALVERSION=' "$cfgfile"; then
-                echo 'CONFIG_LOCALVERSION="_ecoo_81082668"' >> "$cfgfile"
+          WORK_DIR="$OUT_KERNEL_DIR"
+          if [ ! -d "$WORK_DIR" ]; then
+            WORK_DIR="$SRC_KERNEL_DIR"
+          fi
+          echo "Working directory: $WORK_DIR"
+
+          echo ""
+          echo "=== Patching ALL .config files ==="
+          for cfgfile in $(find . -name ".config" -path "*/linux-4.4.y/*" -type f 2>/dev/null); do
+            echo "  Patching: $cfgfile"
+            sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="_ecoo_81082668"/' "$cfgfile"
+            if ! grep -q 'CONFIG_LOCALVERSION=' "$cfgfile"; then
+              echo 'CONFIG_LOCALVERSION="_ecoo_81082668"' >> "$cfgfile"
+            fi
+            sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$cfgfile"
+            for opt in DEVTMPFS DEVTMPFS_MOUNT TMPFS FUTEX EPOLL SIGNALFD TIMERFD EVENTFD INOTIFY_USER FHANDLE MULTIUSER SYSFS; do
+              sed -i "s/# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "$cfgfile"
+              if ! grep -q "CONFIG_${opt}=y" "$cfgfile"; then
+                echo "CONFIG_${opt}=y" >> "$cfgfile"
               fi
-              sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$cfgfile"
-              for opt in DEVTMPFS DEVTMPFS_MOUNT TMPFS FUTEX EPOLL SIGNALFD TIMERFD EVENTFD INOTIFY_USER FHANDLE MULTIUSER SYSFS; do
-                sed -i "s/# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "$cfgfile"
-                if ! grep -q "CONFIG_${opt}=y" "$cfgfile"; then
-                  echo "CONFIG_${opt}=y" >> "$cfgfile"
-                fi
-              done
             done
+          done
 
-            echo ""
-            echo "Deleting cached version strings..."
-            find . -name "kernel.release" -path "*/linux-4.4.y/*" -delete 2>/dev/null
-            find . -name "utsrelease.h" -path "*/linux-4.4.y/*" -delete 2>/dev/null
+          echo ""
+          echo "=== Delete cached version files ==="
+          find . -name "kernel.release" -path "*/linux-4.4.y/*" -delete 2>/dev/null
+          find . -name "utsrelease.h" -path "*/linux-4.4.y/*" -delete 2>/dev/null
+          find . -name "compile.h" -path "*/generated/*" -delete 2>/dev/null
 
-            echo ""
-            echo "Running oldconfig with SDK cross-compiler..."
-            cd ${KERNEL_SRC}
-            make ARCH=arm CROSS_COMPILE=${CROSS_COMPILE} oldconfig </dev/null 2>&1 || true
+          echo ""
+          echo "=== Determine CROSS_COMPILE for rebuild ==="
+          if [ -n "${SDK_CROSS}" ]; then
+            CC="${SDK_CROSS}"
+            echo "Using SDK cross-compiler from build log: $CC"
+          elif [ -n "${TOOLCHAIN_BIN}" ]; then
+            CC="arm-histbv310-linux-"
+            echo "Using toolchain from SDK: $CC"
+          else
+            echo "Searching for SDK cross-compiler..."
+            CC=$(find tools/ -name "arm-his*-gcc" -type f 2>/dev/null | head -1 | sed 's/-gcc$//')
+            if [ -z "$CC" ]; then
+              CC="arm-linux-gnueabihf-"
+              echo "WARNING: SDK toolchain not found, using system: $CC"
+            else
+              echo "Found: $CC"
+            fi
+          fi
+          echo "CROSS_COMPILE for rebuild: $CC"
 
-            echo "After oldconfig:"
-            grep "CONFIG_LOCALVERSION=" .config
-            grep "CONFIG_DEVTMPFS" .config
+          echo ""
+          echo "=== Running oldconfig ==="
+          cd "$WORK_DIR"
+          make ARCH=arm CROSS_COMPILE=$CC oldconfig </dev/null 2>&1 || true
 
-            echo ""
-            echo "Force-rebuilding version and devtmpfs related files..."
-            touch init/version.c init/do_mounts.c drivers/base/devtmpfs.c
+          echo ""
+          echo "After oldconfig:"
+          grep "CONFIG_LOCALVERSION=" .config
+          grep "CONFIG_DEVTMPFS" .config
 
-            echo ""
-            echo "Rebuilding kernel..."
-            make ARCH=arm CROSS_COMPILE=${CROSS_COMPILE} -j$(nproc) 2>&1 | tail -20
-            make ARCH=arm CROSS_COMPILE=${CROSS_COMPILE} uImage 2>&1 || true
+          echo ""
+          echo "=== Force rebuild version and devtmpfs objects ==="
+          rm -f init/version.o init/version.s init/do_mounts.o
+          rm -f drivers/base/devtmpfs.o drivers/base/devtmpfs.s
+          rm -f include/config/kernel.release
+          rm -f include/generated/utsrelease.h include/generated/compile.h
 
-            if [ -f arch/arm/boot/uImage ]; then
-              echo ""
-              echo "=== Verifying rebuilt uImage ==="
-              strings arch/arm/boot/uImage | grep "4.4.35" | head -5
-              if strings arch/arm/boot/uImage | grep -q "4.4.35_ecoo"; then
+          echo ""
+          echo "=== Rebuilding kernel with SDK cross-compiler ==="
+          make ARCH=arm CROSS_COMPILE=$CC -j$(nproc) 2>&1 | tail -30
+          make ARCH=arm CROSS_COMPILE=$CC uImage 2>&1 || true
+
+          echo ""
+          echo "=== Verify rebuilt kernel ==="
+          for uimg in arch/arm/boot/uImage ../source/kernel/linux-4.4.y/arch/arm/boot/uImage; do
+            if [ -f "$uimg" ]; then
+              echo "Found uImage: $uimg"
+              strings "$uimg" | grep "4.4.35" | head -5
+              if strings "$uimg" | grep -q "4.4.35_ecoo"; then
                 echo "OK: Version is 4.4.35_ecoo_81082668"
               else
                 echo "FAIL: Version is still NOT 4.4.35_ecoo_81082668"
               fi
-              if strings arch/arm/boot/uImage | grep -qi "devtmpfs"; then
+              if strings "$uimg" | grep -qi "devtmpfs"; then
                 echo "OK: devtmpfs found"
               else
                 echo "FAIL: devtmpfs NOT found"
               fi
-            else
-              echo "ERROR: uImage not found after rebuild!"
-              ls -lh arch/arm/boot/zImage 2>/dev/null || echo "zImage also not found"
+              break
             fi
-          else
-            echo "SDK build already has correct version, skipping rebuild."
-          fi
+          done
 
       - name: Prepare artifacts
         run: |
           mkdir -p output
 
           UIMAGE="HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y/arch/arm/boot/uImage"
+          OUT_UIMAGE="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y/arch/arm/boot/uImage"
           SDK_KERNEL="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin"
 
-          if [ -f "$UIMAGE" ]; then
-            cp "$UIMAGE" output/hi_kernel_new.bin
-            echo "Using direct-build uImage"
-          elif [ -f "$SDK_KERNEL" ]; then
-            cp "$SDK_KERNEL" output/hi_kernel_new.bin
-            echo "WARNING: Using SDK kernel (patches may not be applied)"
-          else
+          KERNEL_SRC=""
+          for f in "$UIMAGE" "$OUT_UIMAGE" "$SDK_KERNEL"; do
+            if [ -f "$f" ]; then
+              echo "Using: $f"
+              KERNEL_SRC="$f"
+              break
+            fi
+          done
+
+          if [ -z "$KERNEL_SRC" ]; then
             echo "ERROR: No kernel found"
             find HiSTBLinuxV100R005C00SPC060/ -name "uImage" -o -name "hi_kernel*" 2>/dev/null || true
             exit 1
           fi
+
+          cp "$KERNEL_SRC" output/hi_kernel_new.bin
 
           echo ""
           echo "=== Final verification ==="
