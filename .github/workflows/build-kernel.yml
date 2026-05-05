@@ -5,6 +5,10 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+concurrency:
+  group: build-kernel-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-kernel:
     runs-on: ubuntu-22.04
