@@ -86,163 +86,138 @@ jobs:
             fi
           fi
 
-      - name: Configure SDK and build kernel
+      - name: Build kernel with SDK (first pass)
         run: |
-          set -e
-          SDK_ROOT="HiSTBLinuxV100R005C00SPC060"
-          SDK_KERNEL="${SDK_ROOT}/source/kernel/linux-4.4.y"
-          SDK_OUT_KERNEL="${SDK_ROOT}/out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y"
-
-          echo "============================================"
-          echo "  Step 1: Configure SDK"
-          echo "============================================"
-          cd ${SDK_ROOT}
+          cd HiSTBLinuxV100R005C00SPC060
           if [ -f "configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak" ]; then
             cp configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
-            echo "Configured for hi3798mdmo1g (1GB RAM)"
           else
-            echo "ERROR: cfg.mak template not found"
+            echo "ERROR: cfg.mak not found"
             find configs/ -name "*hi3798*" -type f 2>/dev/null || true
             exit 1
           fi
 
-          echo ""
-          echo "============================================"
-          echo "  Step 2: Fix kernel version string"
-          echo "============================================"
-          echo "Original: 4.4.35_ecoo_81082668"
-          echo "SDK default: 4.4.35_s40"
+          source env.sh
+          make linux -j$(nproc)
 
-          echo ""
-          echo "============================================"
-          echo "  Step 3: Fix memory configuration"
-          echo "============================================"
-          echo "Original: mem=1G mmz=ddr,0,0,60M"
-          echo "SDK default: mem=512M mmz=ddr,0,0,48M"
+          echo "=== SDK build complete ==="
+          echo "Searching for .config..."
+          find out/ -name ".config" 2>/dev/null || true
+          find source/kernel/ -name ".config" 2>/dev/null || true
 
-          BOARD_CFG="${SDK_KERNEL}/arch/arm/configs/hi3798mv100_defconfig"
-          if [ -f "$BOARD_CFG" ]; then
-            sed -i 's/mem=512M/mem=1G/g' "$BOARD_CFG" 2>/dev/null || true
-            sed -i 's/mem=384M/mem=1G/g' "$BOARD_CFG" 2>/dev/null || true
-            sed -i 's/mem=768M/mem=1G/g' "$BOARD_CFG" 2>/dev/null || true
-            sed -i 's/mmz=ddr,0,0,48M/mmz=ddr,0,0,60M/g' "$BOARD_CFG" 2>/dev/null || true
-            sed -i 's/mmz=ddr,0,0,32M/mmz=ddr,0,0,60M/g' "$BOARD_CFG" 2>/dev/null || true
-            echo "  Fixed defconfig: $BOARD_CFG"
+      - name: Patch kernel config and rebuild
+        run: |
+          cd HiSTBLinuxV100R005C00SPC060
+
+          CONFIG_FILE=$(find source/kernel/linux-4.4.y -name ".config" | head -1)
+          if [ -z "$CONFIG_FILE" ]; then
+            CONFIG_FILE=$(find out/ -name ".config" | head -1)
           fi
 
-          for f in $(find . -name "*.cfg" -o -name "*.mak" -o -name "*.config" 2>/dev/null | head -50); do
-            if grep -q "mem=512M\|mem=384M\|mmz=ddr,0,0,48M\|mmz=ddr,0,0,32M" "$f" 2>/dev/null; then
-              echo "  Fixing $f"
-              sed -i 's/mem=512M/mem=1G/g' "$f" 2>/dev/null || true
-              sed -i 's/mem=384M/mem=1G/g' "$f" 2>/dev/null || true
-              sed -i 's/mem=768M/mem=1G/g' "$f" 2>/dev/null || true
-              sed -i 's/mmz=ddr,0,0,48M/mmz=ddr,0,0,60M/g' "$f" 2>/dev/null || true
-              sed -i 's/mmz=ddr,0,0,32M/mmz=ddr,0,0,60M/g' "$f" 2>/dev/null || true
+          if [ -z "$CONFIG_FILE" ]; then
+            echo "ERROR: .config not found anywhere!"
+            exit 1
+          fi
+
+          echo "Found .config at: $CONFIG_FILE"
+          echo ""
+          echo "=== Before patching ==="
+          grep "CONFIG_LOCALVERSION=" "$CONFIG_FILE" || echo "LOCALVERSION not set"
+          grep "CONFIG_DEVTMPFS" "$CONFIG_FILE" || echo "DEVTMPFS not set"
+          grep "CONFIG_DEVTMPFS_MOUNT" "$CONFIG_FILE" || echo "DEVTMPFS_MOUNT not set"
+
+          echo ""
+          echo "=== Patching .config ==="
+
+          sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="_ecoo_81082668"/' "$CONFIG_FILE"
+          sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$CONFIG_FILE" 2>/dev/null || true
+          if ! grep -q "CONFIG_LOCALVERSION=" "$CONFIG_FILE"; then
+            echo 'CONFIG_LOCALVERSION="_ecoo_81082668"' >> "$CONFIG_FILE"
+          fi
+          if grep -q "CONFIG_LOCALVERSION_AUTO=y" "$CONFIG_FILE"; then
+            sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$CONFIG_FILE"
+          fi
+
+          for opt in DEVTMPFS DEVTMPFS_MOUNT TMPFS FUTEX EPOLL SIGNALFD TIMERFD EVENTFD INOTIFY_USER FHANDLE MULTIUSER SYSFS; do
+            sed -i "s/# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "$CONFIG_FILE" 2>/dev/null || true
+            if ! grep -q "CONFIG_${opt}=y" "$CONFIG_FILE"; then
+              echo "CONFIG_${opt}=y" >> "$CONFIG_FILE"
             fi
           done
 
-          DTS_FILE="${SDK_KERNEL}/arch/arm/boot/dts/hi3798mv100.dts"
-          if [ -f "$DTS_FILE" ]; then
-            sed -i 's/mem=512M/mem=1G/g' "$DTS_FILE" 2>/dev/null || true
-            sed -i 's/mem=384M/mem=1G/g' "$DTS_FILE" 2>/dev/null || true
-            sed -i 's/mmz=ddr,0,0,48M/mmz=ddr,0,0,60M/g' "$DTS_FILE" 2>/dev/null || true
-            echo "  Fixed DTS bootargs"
-          fi
+          echo ""
+          echo "=== After patching ==="
+          grep "CONFIG_LOCALVERSION=" "$CONFIG_FILE"
+          grep "CONFIG_DEVTMPFS" "$CONFIG_FILE"
+          grep "CONFIG_DEVTMPFS_MOUNT" "$CONFIG_FILE"
 
           echo ""
-          echo "============================================"
-          echo "  Step 4: Fix critical kernel config options"
-          echo "============================================"
-
-          DEFCONFIG="${SDK_KERNEL}/arch/arm/configs/hi3798mv100_defconfig"
-          if [ ! -f "$DEFCONFIG" ]; then
-            DEFCONFIG=$(find ${SDK_KERNEL}/arch/arm/configs/ -name "*hi3798*" | head -1)
-          fi
-
-          if [ -f "$DEFCONFIG" ]; then
-            echo "Patching defconfig: $DEFCONFIG"
-
-            for opt in DEVTMPFS DEVTMPFS_MOUNT TMPFS FUTEX EPOLL SIGNALFD TIMERFD EVENTFD INOTIFY_USER FHANDLE MULTIUSER SYSFS; do
-              grep -q "CONFIG_${opt}=y" "$DEFCONFIG" || echo "CONFIG_${opt}=y" >> "$DEFCONFIG"
-              sed -i "s/# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "$DEFCONFIG" 2>/dev/null || true
-            done
-
-            echo "  Critical config options added"
-          else
-            echo "  WARNING: defconfig not found"
-          fi
+          echo "=== Running oldconfig ==="
+          cd source/kernel/linux-4.4.y
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- oldconfig </dev/null 2>&1 || true
 
           echo ""
-          echo "============================================"
-          echo "  Step 5: First pass build (generate .config)"
-          echo "============================================"
-          source env.sh
-          make linux -j$(nproc) 2>&1 | tail -5 || true
+          echo "=== After oldconfig ==="
+          grep "CONFIG_LOCALVERSION=" .config
+          grep "CONFIG_DEVTMPFS" .config
+          grep "CONFIG_DEVTMPFS_MOUNT" .config
 
           echo ""
-          echo "============================================"
-          echo "  Step 6: Patch output .config"
-          echo "============================================"
-          if [ -f "${SDK_OUT_KERNEL}/.config" ]; then
-            echo "Patching ${SDK_OUT_KERNEL}/.config"
-
-            sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="_ecoo_81082668"/' "${SDK_OUT_KERNEL}/.config"
-            sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "${SDK_OUT_KERNEL}/.config" 2>/dev/null || true
-            echo "  LOCALVERSION set to _ecoo_81082668"
-
-            for opt in DEVTMPFS DEVTMPFS_MOUNT TMPFS FUTEX EPOLL SIGNALFD TIMERFD EVENTFD INOTIFY_USER FHANDLE MULTIUSER SYSFS; do
-              sed -i "s/# CONFIG_${opt} is not set/CONFIG_${opt}=y/" "${SDK_OUT_KERNEL}/.config" 2>/dev/null || true
-              grep -q "CONFIG_${opt}=y" "${SDK_OUT_KERNEL}/.config" || echo "CONFIG_${opt}=y" >> "${SDK_OUT_KERNEL}/.config"
-            done
-            echo "  Critical options ensured in .config"
-
-            echo ""
-            echo "=== Verification ==="
-            echo "LOCALVERSION: $(grep CONFIG_LOCALVERSION ${SDK_OUT_KERNEL}/.config | grep -v AUTO)"
-            echo "DEVTMPFS: $(grep CONFIG_DEVTMPFS ${SDK_OUT_KERNEL}/.config)"
-            echo "DEVTMPFS_MOUNT: $(grep CONFIG_DEVTMPFS_MOUNT ${SDK_OUT_KERNEL}/.config)"
-          else
-            echo "WARNING: .config not found at ${SDK_OUT_KERNEL}/.config"
-            echo "Searching for .config..."
-            find ${SDK_ROOT}/out/ -name ".config" 2>/dev/null || true
-          fi
+          echo "=== Rebuilding kernel directly ==="
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) 2>&1 | tail -20
 
           echo ""
-          echo "============================================"
-          echo "  Step 7: Final kernel build"
-          echo "============================================"
-          make linux -j$(nproc) 2>&1 | tee build.log
+          echo "=== Creating uImage ==="
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- uImage 2>&1 || true
+
+          echo ""
+          echo "=== Kernel build output ==="
+          ls -lh arch/arm/boot/uImage 2>/dev/null || echo "uImage not found at arch/arm/boot/uImage"
+          ls -lh arch/arm/boot/zImage 2>/dev/null || echo "zImage not found"
 
       - name: Prepare artifacts
         run: |
           mkdir -p output
+
           SDK_OUT="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/image/emmc_image"
+          KERNEL_BOOT="HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y/arch/arm/boot"
 
           if [ -f "${SDK_OUT}/hi_kernel.bin" ]; then
+            cp "${SDK_OUT}/hi_kernel.bin" output/hi_kernel_sdk.bin
+            echo "SDK kernel found"
+          fi
+
+          if [ -f "${KERNEL_BOOT}/uImage" ]; then
+            cp "${KERNEL_BOOT}/uImage" output/hi_kernel_new.bin
+            echo "Direct-build uImage found"
+          elif [ -f "${SDK_OUT}/hi_kernel.bin" ]; then
             cp "${SDK_OUT}/hi_kernel.bin" output/hi_kernel_new.bin
-            echo "Kernel image found"
+            echo "Using SDK kernel as fallback"
           else
-            echo "Searching for kernel image..."
-            find HiSTBLinuxV100R005C00SPC060/out/ -name "hi_kernel*" -type f 2>/dev/null || true
-            find HiSTBLinuxV100R005C00SPC060/source/kernel/ -name "uImage" -type f 2>/dev/null || true
-            echo "ERROR: Kernel image not found"
+            echo "Searching for kernel..."
+            find HiSTBLinuxV100R005C00SPC060/ -name "uImage" -type f 2>/dev/null || true
+            find HiSTBLinuxV100R005C00SPC060/ -name "zImage" -type f 2>/dev/null || true
+            echo "ERROR: No kernel image found"
             exit 1
           fi
 
-          echo "=== Verifying kernel version string ==="
+          echo ""
+          echo "=== Verifying kernel ==="
+          echo "Kernel size: $(du -h output/hi_kernel_new.bin | cut -f1)"
+          echo ""
+          echo "Version strings:"
           strings output/hi_kernel_new.bin | grep "4.4.35" | head -5 || true
+          echo ""
           if strings output/hi_kernel_new.bin | grep -q "4.4.35_ecoo"; then
-            echo "OK: Kernel version matches original firmware (4.4.35_ecoo_81082668)"
+            echo "OK: Version matches 4.4.35_ecoo_81082668"
           else
-            echo "WARNING: Kernel version does NOT match original firmware!"
+            echo "WARNING: Version does NOT match! Expected 4.4.35_ecoo_81082668"
           fi
-
-          echo "=== Verifying DEVTMPFS ==="
-          strings output/hi_kernel_new.bin | grep -i "devtmpfs" | head -3 || echo "WARNING: devtmpfs string not found in kernel"
-
-          DTB_FIND=$(find HiSTBLinuxV100R005C00SPC060/source/kernel/linux-4.4.y/arch/arm/boot/dts/ -name "hi3798mv100.dtb" 2>/dev/null | head -1)
-          if [ -n "$DTB_FIND" ]; then
-            cp "$DTB_FIND" output/hi3798mv100.dtb
+          echo ""
+          if strings output/hi_kernel_new.bin | grep -q "devtmpfs"; then
+            echo "OK: devtmpfs found in kernel binary"
+          else
+            echo "WARNING: devtmpfs NOT found in kernel binary!"
           fi
 
       - name: Upload kernel artifact
@@ -261,9 +236,10 @@ jobs:
           echo "| Device | Hi3798MV100 mdmo1g |" >> $GITHUB_STEP_SUMMARY
           echo "| Kernel | Linux 4.4.35_ecoo_81082668 |" >> $GITHUB_STEP_SUMMARY
           echo "| SDK | HiSTBLinuxV100R005C00SPC060 |" >> $GITHUB_STEP_SUMMARY
-          echo "| RAM | 1GB |" >> $GITHUB_STEP_SUMMARY
-          echo "| GPU | Mali-450 MP6 |" >> $GITHUB_STEP_SUMMARY
           echo "| DEVTMPFS | Enabled |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Verification" >> $GITHUB_STEP_SUMMARY
+          strings output/hi_kernel_new.bin | grep "4.4.35" | head -3 >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Output Files" >> $GITHUB_STEP_SUMMARY
           ls -lh output/ >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
