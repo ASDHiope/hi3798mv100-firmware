@@ -194,18 +194,19 @@ jobs:
           echo "=== Looking for SDK MPP libraries ==="
           OUT_DIR="out/hi3798mv100/hi3798mdmo1g"
           MSP_LIB=""
-          for d in $(find "$OUT_DIR" -type d -name "lib" 2>/dev/null); do
-            if ls "$d"/libhi_msp* 2>/dev/null >/dev/null; then
-              MSP_LIB="$d"
-              echo "Found MPP libs: $d"
-              ls -lh "$d"/libhi_msp* 2>/dev/null
-              break
+          echo "Searching all lib directories..."
+          for d in $(find . -type d -name "lib" 2>/dev/null | grep -v ".git"); do
+            if ls "$d"/libhi_* 2>/dev/null >/dev/null; then
+              echo "Found SDK libs in: $d"
+              ls -lh "$d"/libhi_* 2>/dev/null
+              if [ -z "$MSP_LIB" ]; then
+                MSP_LIB="$d"
+              fi
             fi
           done
           if [ -z "$MSP_LIB" ]; then
-            echo "Searching for libraries..."
-            find "$OUT_DIR" -name "libhi_msp*" -o -name "libhi_vo*" -o -name "libhi_hdmi*" 2>/dev/null
-            find source -name "libhi_msp*" -o -name "libhi_vo*" -o -name "libhi_hdmi*" 2>/dev/null
+            echo "No SDK libs found in lib/ dirs, searching all files..."
+            find . -name "libhi_msp*" -o -name "libhi_vo*" -o -name "libhi_hdmi*" -o -name "libhi_sys*" 2>/dev/null | grep -v ".git"
           fi
 
           echo ""
