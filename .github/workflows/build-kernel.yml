@@ -262,7 +262,12 @@ jobs:
 
       - name: Prepare and upload artifacts
         run: |
-          mkdir -p output
+          mkdir -p output/bin output/lib output/kmodules
+
+          echo "=== Copying pre-built files from SDK directory ==="
+          if [ -d "HiSTBLinuxV100R005C00SPC060/output" ]; then
+            cp -rv HiSTBLinuxV100R005C00SPC060/output/* output/ 2>/dev/null || true
+          fi
 
           SDK_KERNEL="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin"
           OUT_UIMAGE="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y/arch/arm/boot/uImage"
