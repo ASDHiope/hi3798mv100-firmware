@@ -166,6 +166,98 @@ jobs:
             fi
           fi
 
+      - name: Build fastboot (hiboot) with 1GB DDR config
+        run: |
+          cd HiSTBLinuxV100R005C00SPC060
+          source env.sh
+
+          echo "=== Current DDR config ==="
+          grep -i "DDR\|ddr\|BOOT_REG" cfg.mak 2>/dev/null || echo "No DDR config found in cfg.mak"
+
+          echo ""
+          echo "=== Searching for DDR reg files ==="
+          find source/boot -name "*.reg" 2>/dev/null | grep -i hi3798 | head -20
+          find source/boot -name "*.reg" 2>/dev/null | grep -i ddr | head -20
+
+          echo ""
+          echo "=== Building fastboot (hiboot) ==="
+          make hiboot -j$(nproc) 2>&1 | tail -30 || {
+            echo "WARNING: make hiboot failed"
+          }
+
+          echo ""
+          echo "=== Checking fastboot output ==="
+          FASTBOOT_DIR="out/hi3798mv100/hi3798mdmo1g/image/emmc_image"
+          if [ -f "$FASTBOOT_DIR/fastboot.bin" ]; then
+            echo "✅ fastboot.bin built: $(ls -lh $FASTBOOT_DIR/fastboot.bin | awk '{print $5}')"
+            file "$FASTBOOT_DIR/fastboot.bin"
+          else
+            echo "❌ fastboot.bin not found"
+            find out/ -name "fastboot*" -type f 2>/dev/null | head -10
+          fi
+
+          if [ -f "$FASTBOOT_DIR/bootargs.bin" ]; then
+            echo "✅ bootargs.bin found: $(ls -lh $FASTBOOT_DIR/bootargs.bin | awk '{print $5}')"
+          else
+            echo "❌ bootargs.bin not found"
+          fi
+
+          echo ""
+          echo "=== Generating 1GB bootargs.bin ==="
+          cat > /tmp/bootargs_1g.txt << 'BOOTARGS_EOF'
+model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait mem=1G mmz=ddr,0,0,60M vmalloc=500M blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)
+BOOTARGS_EOF
+
+          echo "1GB bootargs content:"
+          cat /tmp/bootargs_1g.txt
+
+          TOOLCHAIN_BIN=$(find tools/ -name "arm-his*-linux" -type d 2>/dev/null | head -1)/bin
+          export PATH="$TOOLCHAIN_BIN:$PATH"
+
+          MKBOOTARGS=""
+          for f in $(find . -name "mkbootargs" -type f 2>/dev/null); do
+            echo "Found mkbootargs: $f"
+            MKBOOTARGS="$f"
+          done
+
+          if [ -n "$MKBOOTARGS" ]; then
+            echo "Generating bootargs.bin with mkbootargs..."
+            $MKBOOTARGS -s 1M -r /tmp/bootargs_1g.txt -o /tmp/bootargs_1g.bin 2>&1 || {
+              echo "mkbootargs failed, trying alternative method..."
+            }
+          fi
+
+          if [ ! -f /tmp/bootargs_1g.bin ]; then
+            echo "Creating bootargs.bin manually..."
+            dd if=/dev/zero of=/tmp/bootargs_1g.bin bs=1M count=1 2>/dev/null
+            echo -n "$(cat /tmp/bootargs_1g.txt)" | dd of=/tmp/bootargs_1g.bin bs=1 conv=notrunc 2>/dev/null
+          fi
+
+          if [ -f /tmp/bootargs_1g.bin ]; then
+            echo "✅ bootargs_1g.bin created: $(ls -lh /tmp/bootargs_1g.bin | awk '{print $5}')"
+            cp /tmp/bootargs_1g.bin "$FASTBOOT_DIR/bootargs_1g.bin" 2>/dev/null || true
+          fi
+
+          echo ""
+          echo "=== Generating 512MB bootargs.bin (safe fallback) ==="
+          cat > /tmp/bootargs_512m.txt << 'BOOTARGS_EOF'
+model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait mem=512M mmz=ddr,0,0,48M vmalloc=500M blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)
+BOOTARGS_EOF
+
+          if [ -n "$MKBOOTARGS" ]; then
+            $MKBOOTARGS -s 1M -r /tmp/bootargs_512m.txt -o /tmp/bootargs_512m.bin 2>&1 || true
+          fi
+
+          if [ ! -f /tmp/bootargs_512m.bin ]; then
+            dd if=/dev/zero of=/tmp/bootargs_512m.bin bs=1M count=1 2>/dev/null
+            echo -n "$(cat /tmp/bootargs_512m.txt)" | dd of=/tmp/bootargs_512m.bin bs=1 conv=notrunc 2>/dev/null
+          fi
+
+          if [ -f /tmp/bootargs_512m.bin ]; then
+            echo "✅ bootargs_512m.bin created"
+            cp /tmp/bootargs_512m.bin "$FASTBOOT_DIR/bootargs_512m.bin" 2>/dev/null || true
+          fi
+
       - name: Build SDK sample programs and display init
         run: |
           cd HiSTBLinuxV100R005C00SPC060
@@ -300,12 +392,37 @@ jobs:
 
       - name: Prepare and upload artifacts
         run: |
-          mkdir -p output/bin output/lib output/kmodules
+          mkdir -p output/bin output/lib output/kmodules output/boot
 
           echo "=== Copying pre-built files from SDK directory ==="
           if [ -d "HiSTBLinuxV100R005C00SPC060/output" ]; then
             cp -rv HiSTBLinuxV100R005C00SPC060/output/* output/ 2>/dev/null || true
           fi
+
+          echo ""
+          echo "=== Collecting boot files (fastboot + bootargs) ==="
+          BOOT_DIR="output/boot"
+          SDK_BOOT_DIR="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/image/emmc_image"
+
+          for f in fastboot.bin bootargs.bin bootargs_1g.bin bootargs_512m.bin; do
+            if [ -f "$SDK_BOOT_DIR/$f" ]; then
+              echo "  ✅ Found: $f"
+              cp "$SDK_BOOT_DIR/$f" "$BOOT_DIR/" 2>/dev/null || true
+            else
+              echo "  ❌ Not found: $f"
+            fi
+          done
+
+          echo ""
+          echo "=== Searching for DDR reg files ==="
+          find HiSTBLinuxV100R005C00SPC060/source/boot -name "*.reg" 2>/dev/null | grep -i hi3798 | while read f; do
+            echo "  Found DDR reg: $f"
+            cp "$f" "$BOOT_DIR/" 2>/dev/null || true
+          done || true
+
+          echo ""
+          echo "Boot files collected:"
+          ls -lh "$BOOT_DIR/" 2>/dev/null || echo "No boot files found"
 
           SDK_KERNEL="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin"
           OUT_UIMAGE="HiSTBLinuxV100R005C00SPC060/out/hi3798mv100/hi3798mdmo1g/obj/source/kernel/linux-4.4.y/arch/arm/boot/uImage"
