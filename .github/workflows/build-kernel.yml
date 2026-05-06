@@ -250,10 +250,48 @@ jobs:
 
           cp ../src/hi_display_init.c /tmp/hi_display_init.c
 
-          echo "Building standalone dlopen-based program (no SDK libs needed at compile time)..."
-          ${SDK_CROSS}gcc -o output/bin/hi_display_init /tmp/hi_display_init.c -ldl -lpthread 2>&1 || {
-            echo "WARNING: Failed to compile display init program"
-          }
+          echo "Searching for SDK MSP headers..."
+          MSP_INC=""
+          for d in $(find source -type d -name "include" 2>/dev/null | grep -v ".git"); do
+            if [ -f "$d/hi_comm_vo.h" ]; then
+              MSP_INC="$d"
+              echo "Found MPP headers: $d"
+              break
+            fi
+          done || true
+
+          echo "Searching for SDK MSP libraries..."
+          MSP_LIB=""
+          for d in $(find . -type d -name "lib" 2>/dev/null | grep -v ".git"); do
+            if ls "$d"/libhi_msp* 2>/dev/null >/dev/null; then
+              echo "Found SDK libs in: $d"
+              ls -lh "$d"/libhi_msp* 2>/dev/null
+              if [ -z "$MSP_LIB" ]; then
+                MSP_LIB="$d"
+              fi
+            fi
+          done || true
+
+          if [ -n "$MSP_INC" ] && [ -n "$MSP_LIB" ]; then
+            echo "Compiling with SDK headers and STATIC linking against libhi_msp.a..."
+            ${SDK_CROSS}gcc -o output/bin/hi_display_init /tmp/hi_display_init.c \
+              -I"$MSP_INC" -L"$MSP_LIB" -lhi_msp -lpthread -lm -ldl -static 2>&1 || {
+              echo "Static linking failed, trying dynamic with rpath..."
+              ${SDK_CROSS}gcc -o output/bin/hi_display_init /tmp/hi_display_init.c \
+                -I"$MSP_INC" -L"$MSP_LIB" -lhi_msp -lpthread -lm -ldl \
+                -Wl,-rpath,/opt/hisilicon/lib 2>&1 || {
+                echo "Dynamic linking also failed, falling back to dlopen..."
+                ${SDK_CROSS}gcc -o output/bin/hi_display_init /tmp/hi_display_init.c -ldl -lpthread -static 2>&1 || {
+                  echo "WARNING: All compilation attempts failed"
+                }
+              }
+            }
+          else
+            echo "No SDK headers/libs found, building standalone dlopen-based program (static)..."
+            ${SDK_CROSS}gcc -o output/bin/hi_display_init /tmp/hi_display_init.c -ldl -lpthread -static 2>&1 || {
+              echo "WARNING: Failed to compile display init program"
+            }
+          fi
 
           if [ -f output/bin/hi_display_init ]; then
             echo "Display init program built successfully"
