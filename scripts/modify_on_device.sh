@@ -185,7 +185,7 @@ case "$1" in
         load_module hi_tde.ko    || log_warn "hi_tde failed"
         load_module hi_vpss.ko   || log_warn "hi_vpss failed"
         load_module hi_sync.ko   || log_warn "hi_sync failed"
-        load_module mali.ko      || log_warn "mali failed"
+        log_info "mali.ko skipped (causes kernel crash on Hi3798MV100, not needed for display)"
 
         log_info "Module loading complete. Errors: ${ERRORS}"
 
@@ -203,7 +203,7 @@ case "$1" in
         ;;
     stop)
         log_info "Unloading HiSilicon drivers..."
-        for m in mali hi_sync hi_vpss hi_tde hi_fb hi_hdmi hi_vou hi_pq hi_pdm hi_common hi_mmz hi_media; do
+        for m in hi_sync hi_vpss hi_tde hi_fb hi_hdmi hi_vou hi_pq hi_pdm hi_common hi_mmz hi_media; do
             if lsmod | grep -q "^${m}[[:space:]]"; then
                 rmmod "${m}" 2>/dev/null && log_info "Unloaded ${m}" || log_warn "Failed to unload ${m}"
             fi
