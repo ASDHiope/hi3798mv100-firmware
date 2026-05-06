@@ -404,6 +404,17 @@ jobs:
             cp "$f" "$LIB_DIR/" 2>/dev/null || true
           done || true
 
+          echo "Searching for Mali GPU libraries..."
+          find HiSTBLinuxV100R005C00SPC060 -name "libmali*" -type f 2>/dev/null | grep -v ".git" | while read f; do
+            echo "  Found Mali: $f"
+            cp "$f" "$LIB_DIR/" 2>/dev/null || true
+          done || true
+
+          find HiSTBLinuxV100R005C00SPC060 -name "libEGL*" -o -name "libGLES*" -o -name "libUMP*" -o -name "libump*" 2>/dev/null | grep -v ".git" | grep -v "mesa" | while read f; do
+            echo "  Found GPU lib: $f"
+            cp "$f" "$LIB_DIR/" 2>/dev/null || true
+          done || true
+
           echo ""
           echo "Binaries collected: $(ls "$BIN_DIR/" 2>/dev/null | wc -l)"
           ls -lh "$BIN_DIR/" 2>/dev/null || echo "No binaries found"
