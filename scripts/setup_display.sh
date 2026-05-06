@@ -5,7 +5,7 @@ KVER=$(uname -r)
 KO=/lib/modules/${KVER}/kernel/drivers/hisilicon
 SRC=.
 
-echo "[1/6] Loading driver modules..."
+echo "[1/7] Loading driver modules..."
 rmmod mali hi_tde hi_fb hi_hdmi hi_vou hi_pq hi_pdm hi_common hi_mmz hi_media 2>/dev/null
 insmod $KO/hi_media.ko  && echo "  ✅ hi_media"  || echo "  ❌ hi_media"
 insmod $KO/hi_mmz.ko    && echo "  ✅ hi_mmz"    || echo "  ❌ hi_mmz"
@@ -19,22 +19,79 @@ insmod $KO/hi_tde.ko    && echo "  ✅ hi_tde"    || echo "  ❌ hi_tde"
 
 insmod $KO/mali.ko 2>/dev/null && echo "  ✅ mali" || echo "  ⏭️ mali skipped (GPU accel unavailable)"
 
+insmod $KO/ehci-platform.ko 2>/dev/null && echo "  ✅ ehci-platform" || true
+insmod $KO/ohci-platform.ko 2>/dev/null && echo "  ✅ ohci-platform" || true
+
 echo "  /proc/fb: $(cat /proc/fb 2>/dev/null)"
 
-echo "[2/6] Masking NFS services..."
+echo "[2/7] Installing Mali GPU libraries..."
+MALI_LIB_DIR="/usr/lib/mali"
+MALI_FOUND=0
+
+if [ -d "${SRC}/lib" ]; then
+    echo "  Searching for Mali GPU libraries in ${SRC}/lib..."
+    for f in ${SRC}/lib/libMali.so* ${SRC}/lib/libmali.so*; do
+        if [ -f "$f" ]; then
+            echo "  Found: $f"
+            mkdir -p "$MALI_LIB_DIR"
+            cp "$f" "$MALI_LIB_DIR/" 2>/dev/null || true
+            MALI_FOUND=1
+        fi
+    done
+fi
+
+if [ -f "${SRC}/lib/libMali.so.fbdev.r7p0" ]; then
+    echo "  Installing Mali-450 r7p0 fbdev backend..."
+    mkdir -p "$MALI_LIB_DIR"
+    cp "${SRC}/lib/libMali.so.fbdev.r7p0" "$MALI_LIB_DIR/libMali.so"
+    MALI_FOUND=1
+elif [ -f "${SRC}/lib/libMali.so.x11.r7p0" ]; then
+    echo "  Installing Mali-450 r7p0 x11 backend..."
+    mkdir -p "$MALI_LIB_DIR"
+    cp "${SRC}/lib/libMali.so.x11.r7p0" "$MALI_LIB_DIR/libMali.so"
+    MALI_FOUND=1
+fi
+
+if [ $MALI_FOUND -eq 1 ] && [ -f "$MALI_LIB_DIR/libMali.so" ]; then
+    echo "  ✅ libMali.so installed to $MALI_LIB_DIR"
+    file "$MALI_LIB_DIR/libMali.so"
+
+    cd "$MALI_LIB_DIR"
+    ln -sf libMali.so libEGL.so.1.4
+    ln -sf libEGL.so.1.4 libEGL.so.1
+    ln -sf libEGL.so.1 libEGL.so
+    ln -sf libMali.so libGLESv1_CM.so.1.1
+    ln -sf libGLESv1_CM.so.1.1 libGLESv1_CM.so.1
+    ln -sf libGLESv1_CM.so.1 libGLESv1_CM.so
+    ln -sf libMali.so libGLESv2.so.2.0
+    ln -sf libGLESv2.so.2.0 libGLESv2.so.2
+    ln -sf libGLESv2.so.2 libGLESv2.so
+    cd /
+
+    echo "$MALI_LIB_DIR" > /etc/ld.so.conf.d/mali.conf
+    ldconfig
+
+    echo "  Mali library links created and ldconfig updated"
+else
+    echo "  ⏭️ No Mali GPU libraries found - will use fbdev software rendering"
+    echo "  To enable GPU acceleration later, download Mali-450 user-space driver"
+    echo "  from ARM: https://developer.arm.com/downloads/-/mali-utgard-user-space-drivers"
+fi
+
+echo "[3/7] Masking NFS services..."
 systemctl mask proc-fs-nfsd.mount 2>/dev/null || true
 systemctl mask nfs-server.service 2>/dev/null || true
 systemctl mask nfs-idmapd.service 2>/dev/null || true
 systemctl mask nfs-mountd.service 2>/dev/null || true
 
-echo "[3/6] Removing Samba and Transmission..."
+echo "[4/7] Removing Samba and Transmission..."
 export DEBIAN_FRONTEND=noninteractive
 for pkg in samba samba-common samba-common-bin samba-dsdb-modules samba-libs smbclient transmission-daemon transmission-cli transmission-common; do
     apt-get remove --purge -y "$pkg" 2>/dev/null || true
 done
 apt-get autoremove --purge -y 2>/dev/null || true
 
-echo "[4/6] Installing X11 and Kodi..."
+echo "[5/7] Installing X11 and Kodi..."
 apt-get update -qq 2>/dev/null || true
 for pkg in xserver-xorg-core xserver-xorg-video-fbdev xserver-xorg-input-evdev xinit x11-utils x11-xserver-utils; do
     apt-get install -y --no-install-recommends "$pkg" 2>/dev/null || echo "  Warning: $pkg install failed"
@@ -45,9 +102,32 @@ done
 apt-get install -y --no-install-recommends bluez bluez-firmware pulseaudio-module-bluetooth 2>/dev/null || true
 apt-get clean
 
-echo "[5/6] Configuring X11, Kodi, and auto-start..."
+echo "[6/7] Configuring X11, Kodi, and auto-start..."
 mkdir -p /etc/X11
-cat > /etc/X11/xorg.conf << 'XORGEOF'
+
+if [ -f "$MALI_LIB_DIR/libMali.so" ] && [ -e /dev/mali ]; then
+    echo "  Configuring X11 with Mali GPU driver..."
+    cat > /etc/X11/xorg.conf << 'XORGEOF'
+Section "Device"
+    Identifier  "Mali-450"
+    Driver      "mali"
+    Option      "fbdev"            "/dev/fb0"
+    Option      "DRI2"             "true"
+    Option      "SwapBuffersWait"  "true"
+EndSection
+
+Section "Screen"
+    Identifier  "Default Screen"
+    Device      "Mali-450"
+    DefaultDepth 24
+    SubSection "Display"
+        Depth 24
+    EndSubSection
+EndSection
+XORGEOF
+else
+    echo "  Configuring X11 with fbdev driver (no GPU acceleration)..."
+    cat > /etc/X11/xorg.conf << 'XORGEOF'
 Section "Device"
     Identifier  "HiSilicon FB"
     Driver      "fbdev"
@@ -59,6 +139,7 @@ Section "Screen"
     Device      "HiSilicon FB"
 EndSection
 XORGEOF
+fi
 
 mkdir -p /etc/udev/rules.d
 cat > /etc/udev/rules.d/99-mali.rules << 'UDEVEOF'
@@ -89,7 +170,7 @@ SERVICEEOF
 systemctl daemon-reload
 systemctl enable kodi.service 2>/dev/null || true
 
-echo "[6/6] Creating driver auto-load script..."
+echo "[7/7] Creating driver auto-load script..."
 mkdir -p /etc/modprobe.d
 cat > /etc/modprobe.d/hisilicon-blacklist.conf << 'BLKEOF'
 blacklist hi_mmz
@@ -139,10 +220,12 @@ case "$1" in
         load_module hi_fb.ko
         load_module hi_tde.ko
         load_module mali.ko 2>/dev/null || true
+        load_module ehci-platform.ko 2>/dev/null || true
+        load_module ohci-platform.ko 2>/dev/null || true
         echo "Drivers loaded. fb0: $([ -e /dev/fb0 ] && echo OK || echo MISSING)"
         ;;
     stop)
-        for m in mali hi_tde hi_fb hi_hdmi hi_vou hi_pq hi_pdm hi_common hi_mmz hi_media; do
+        for m in ohci_platform ehci_platform mali hi_tde hi_fb hi_hdmi hi_vou hi_pq hi_pdm hi_common hi_mmz hi_media; do
             lsmod | grep -q "^${m}[[:space:]]" && rmmod "${m}" 2>/dev/null
         done
         ;;
@@ -160,9 +243,25 @@ echo "  Setup Complete!"
 echo "============================================"
 echo ""
 echo "  Display: $(cat /proc/fb 2>/dev/null)"
-echo "  GPU: $([ -e /dev/mali ] && echo 'mali OK' || echo 'mali unavailable (fbdev only)')"
-echo "  Kodi: $ (systemctl is-enabled kodi.service 2>/dev/null)"
+echo "  GPU device: $([ -e /dev/mali ] && echo '/dev/mali OK' || echo 'unavailable')"
+echo "  GPU library: $([ -f /usr/lib/mali/libMali.so ] && echo 'libMali.so OK' || echo 'not installed (fbdev only)')"
+echo "  X11 driver: $([ -f /usr/lib/mali/libMali.so ] && [ -e /dev/mali ] && echo 'mali (GPU)' || echo 'fbdev (software)')"
+echo "  Kodi: $(systemctl is-enabled kodi.service 2>/dev/null)"
+echo "  USB: $([ -d /sys/bus/usb/drivers/usb ] && echo 'OK' || echo 'not loaded')"
+echo ""
+if [ ! -f /usr/lib/mali/libMali.so ]; then
+    echo "  ⚠️  GPU acceleration NOT available - libMali.so missing"
+    echo "  To enable GPU acceleration:"
+    echo "  1. Download Mali-450 user-space driver from ARM:"
+    echo "     https://developer.arm.com/downloads/-/mali-utgard-user-space-drivers"
+    echo "  2. Extract and install libMali.so:"
+    echo "     mkdir -p /usr/lib/mali"
+    echo "     cp libMali.so /usr/lib/mali/"
+    echo "     cd /usr/lib/mali && ln -sf libMali.so libEGL.so.1.4 && ln -sf libEGL.so.1.4 libEGL.so.1"
+    echo "     ln -sf libMali.so libGLESv2.so.2.0 && ln -sf libGLESv2.so.2.0 libGLESv2.so.2"
+    echo "     echo '/usr/lib/mali' > /etc/ld.so.conf.d/mali.conf && ldconfig"
+    echo "  3. Update /etc/X11/xorg.conf to use Driver 'mali'"
+    echo "  4. Restart X and Kodi"
+fi
 echo ""
 echo "  Next: reboot to test auto-start"
-echo "  If mali.ko crashes, fix U-Boot bootargs:"
-echo "    setenv bootargs ... mem=1G mmz=ddr,0,0,60M ..."

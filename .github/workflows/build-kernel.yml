@@ -404,7 +404,7 @@ jobs:
             cp "$f" "$LIB_DIR/" 2>/dev/null || true
           done || true
 
-          echo "Searching for Mali GPU libraries..."
+          echo "Searching for Mali GPU libraries in SDK..."
           find HiSTBLinuxV100R005C00SPC060 -name "libmali*" -type f 2>/dev/null | grep -v ".git" | while read f; do
             echo "  Found Mali: $f"
             cp "$f" "$LIB_DIR/" 2>/dev/null || true
@@ -414,6 +414,72 @@ jobs:
             echo "  Found GPU lib: $f"
             cp "$f" "$LIB_DIR/" 2>/dev/null || true
           done || true
+
+          echo ""
+          echo "=== Downloading ARM Mali-450 user-space driver ==="
+          MALI_TARBALL="mali-450_r7p0-01rel0_linux-armhf_1.tar.gz"
+          MALI_URL="https://developer.arm.com/-/media/Files/downloads/mali-drivers/user-space/hikey/${MALI_TARBALL}"
+          MALI_DIR="mali-450_r7p0-01rel0_linux-armhf_1"
+
+          echo "Downloading from ARM developer site..."
+          wget -q --show-progress -O "/tmp/${MALI_TARBALL}" "${MALI_URL}" 2>&1 || {
+            echo "ARM download failed, trying alternative URL..."
+            wget -q --show-progress -O "/tmp/${MALI_TARBALL}" "https://developer.arm.com/-/media/Files/downloads/mali-drivers/user-space/DX910-SW-99002-r7p0-01rel0/${MALI_TARBALL}" 2>&1 || {
+              echo "WARNING: Could not download Mali user-space driver from ARM"
+            }
+          }
+
+          if [ -f "/tmp/${MALI_TARBALL}" ] && [ -s "/tmp/${MALI_TARBALL}" ]; then
+            echo "Downloaded Mali driver tarball: $(ls -lh /tmp/${MALI_TARBALL} | awk '{print $5}')"
+            mkdir -p /tmp/mali_extract
+            tar xzf "/tmp/${MALI_TARBALL}" -C /tmp/mali_extract/ 2>&1 || {
+              echo "WARNING: Failed to extract Mali tarball"
+            }
+
+            echo "Contents of Mali driver package:"
+            find /tmp/mali_extract -type f 2>/dev/null | head -30
+
+            echo ""
+            echo "Searching for libMali.so in extracted package..."
+            for backend in fbdev x11 wayland-drm drm; do
+              MALI_LIB="/tmp/mali_extract/${MALI_DIR}/${backend}/libMali.so"
+              if [ -f "$MALI_LIB" ]; then
+                echo "  Found libMali.so for backend: ${backend}"
+                cp "$MALI_LIB" "$LIB_DIR/libMali.so.${backend}.r7p0" 2>/dev/null || true
+                file "$MALI_LIB"
+              fi
+            done
+
+            for f in $(find /tmp/mali_extract -name "libMali.so" -type f 2>/dev/null); do
+              echo "  Found: $f"
+              BACKEND=$(basename $(dirname "$f"))
+              if [ ! -f "$LIB_DIR/libMali.so.${BACKEND}.r7p0" ]; then
+                cp "$f" "$LIB_DIR/libMali.so.${BACKEND}.r7p0" 2>/dev/null || true
+              fi
+              file "$f"
+            done
+          else
+            echo "WARNING: Mali driver tarball not available, trying Xilinx repo..."
+          fi
+
+          echo ""
+          echo "Also checking for Xilinx Mali-400 r9p0 driver..."
+          wget -q --show-progress -O "/tmp/mali_xilinx.zip" "https://github.com/Xilinx/mali-userspace-binaries/archive/refs/heads/master.zip" 2>&1 || true
+          if [ -f "/tmp/mali_xilinx.zip" ] && [ -s "/tmp/mali_xilinx.zip" ]; then
+            mkdir -p /tmp/mali_xilinx
+            unzip -q -o "/tmp/mali_xilinx.zip" -d /tmp/mali_xilinx/ 2>&1 || true
+            echo "Xilinx Mali package contents (arm32):"
+            find /tmp/mali_xilinx -name "libMali.so*" -type f 2>/dev/null | while read f; do
+              echo "  Found: $f"
+              file "$f"
+            done
+            for backend in fbdev x11 wayland; do
+              for f in $(find /tmp/mali_xilinx -path "*/aarch_b/${backend}*" -name "libMali.so*" -type f 2>/dev/null); do
+                echo "  Copying Xilinx arm32 ${backend}: $f"
+                cp "$f" "$LIB_DIR/" 2>/dev/null || true
+              done
+            done
+          fi
 
           echo ""
           echo "Binaries collected: $(ls "$BIN_DIR/" 2>/dev/null | wc -l)"
