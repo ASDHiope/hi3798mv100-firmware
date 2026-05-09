@@ -321,6 +321,7 @@
 			interrupts = <0x0 0x42 0x4>;
 			clocks = <0x3 0xb8>;
 			clock-names = "clk";
+			status = "okay";
 		};
 		ehci@0xf9930000 {
 			compatible = "generic-ehci";
@@ -328,6 +329,7 @@
 			interrupts = <0x0 0x3e 0x4>;
 			clocks = <0x3 0x198>;
 			clock-names = "clk";
+			status = "okay";
 		};
 		ohci@0xf9880000 {
 			compatible = "generic-ohci";
@@ -335,6 +337,7 @@
 			interrupts = <0x0 0x43 0x4>;
 			clocks = <0x3 0xb8>;
 			clock-names = "clk";
+			status = "okay";
 		};
 		ohci@0xf9920000 {
 			compatible = "generic-ohci";
@@ -342,6 +345,7 @@
 			interrupts = <0x0 0x3f 0x4>;
 			clocks = <0x3 0x198>;
 			clock-names = "clk";
+			status = "okay";
 		};
 		xhci@0xf98a0000 {
 			compatible = "generic-xhci";
@@ -349,6 +353,7 @@
 			interrupts = <0x0 0x45 0x4>;
 			clocks = <0x3 0xb0>;
 			clock-names = "clk";
+			status = "okay";
 		};
 		hiudc@0xf98c0000 {
 			compatible = "hiudc";
@@ -356,12 +361,14 @@
 			interrupts = <0x0 0x44 0x4>;
 			clocks = <0x3 0xb8>;
 			clock-names = "clk";
+			status = "disabled";
 		};
 		hi3798mv100.hiusbotg {
 			compatible = "hiusbotg";
 			reg = <0xf9880000 0x10000 0xf9890000 0x10000 0xf8a20120 0x4>;
 			host_time = <0x5dc 0x4>;
 			device_time = <0x3e8 0x4>;
+			status = "disabled";
 		};
 		regulator@0xf8a23020 {
 			compatible = "hisilicon,hi3798mv100-volt";

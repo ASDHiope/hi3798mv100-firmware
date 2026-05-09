@@ -159,12 +159,20 @@ if [ -f "\$KO/mali.ko" ]; then
     insmod \$KO/mali.ko 2>/dev/null && echo "  mali OK" || echo "  mali FAIL"
 fi
 
+echo "Loading USB drivers..."
+USB_KO=/lib/modules/\$(uname -r)/kernel/drivers/usb/host
+for usb_mod in ehci-platform ohci-platform xhci-plat-hcd; do
+    if [ -f "\$USB_KO/\${usb_mod}.ko" ]; then
+        insmod \$USB_KO/\${usb_mod}.ko 2>/dev/null && echo "  \$usb_mod OK" || echo "  \$usb_mod FAIL"
+    fi
+done
+
 sleep 2
 
 echo "Initializing framebuffer to 1080P..."
 python3 /opt/hisilicon/bin/fb_init.py 2>/dev/null || echo "  fb_init failed"
 
-echo "Display drivers loaded."
+echo "All drivers loaded."
 DREOF
     chmod +x /opt/hisilicon/bin/load_drivers.sh
 
@@ -275,6 +283,21 @@ UDEVEOF
 KERNEL=="fb0", MODE="0666"
 KERNEL=="fb1", MODE="0666"
 UDEVEOF2
+
+    cat > /etc/udev/rules.d/99-usb.rules << UDEVEOF3
+SUBSYSTEM=="usb", MODE="0666"
+KERNEL=="hidraw*", MODE="0666"
+KERNEL=="usbdev*", MODE="0666"
+ACTION=="add", SUBSYSTEM=="usb", RUN+="/bin/chmod 0666 %S%p"
+UDEVEOF3
+
+    mkdir -p /etc/modprobe.d
+    cat > /etc/modprobe.d/hi3798-usb-blacklist.conf << BLEOF
+blacklist hiusbotg
+blacklist hiudc
+BLEOF
+
+    echo "  USB blacklist and udev rules configured"
 
     mkdir -p /home/ubuntu/.kodi/userdata
 
