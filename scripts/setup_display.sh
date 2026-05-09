@@ -19,6 +19,18 @@ insmod $KO/hi_tde.ko    && echo "  ✅ hi_tde"    || echo "  ❌ hi_tde"
 
 insmod $KO/mali.ko 2>/dev/null && echo "  ✅ mali" || echo "  ⏭️ mali skipped (GPU accel unavailable)"
 
+echo "[1.5/7] Initializing display via MPP API..."
+if command -v hi_display_init >/dev/null 2>&1; then
+    hi_display_init 1080p60 && echo "  ✅ Display initialized (1080p60)" || {
+        echo "  ⚠️ 1080p60 failed, trying 720p60..."
+        hi_display_init 720p60 && echo "  ✅ Display initialized (720p60)" || echo "  ❌ Display init failed"
+    }
+else
+    echo "  ⏭️ hi_display_init not found - display will remain unconfigured"
+    echo "  Install libhi_msp.so + hi_display_init to enable display output"
+fi
+echo "  fb0 modes: $(cat /sys/class/graphics/fb0/modes 2>/dev/null || echo 'N/A')"
+
 insmod $KO/ehci-platform.ko 2>/dev/null && echo "  ✅ ehci-platform" || true
 insmod $KO/ohci-platform.ko 2>/dev/null && echo "  ✅ ohci-platform" || true
 

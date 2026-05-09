@@ -670,30 +670,43 @@ jobs:
           #!/bin/sh
           echo "=== Hi3798MV100 First Boot Fix ==="
 
-          echo "[1/5] Masking swapfile service..."
-          ln -sf /dev/null /etc/systemd/system/create-swapfile.service
-          rm -f /etc/systemd/system/multi-user.target.wants/create-swapfile.service
+          echo "[1/6] NUKING ALL swap services..."
+          for svc in create-swapfile.service swap-create.service swapfile.service \
+                     create_swapfile.service swapfile.swap dev-swapfile.swap \
+                     systemd-swap.service swap.target; do
+              ln -sf /dev/null /etc/systemd/system/$svc 2>/dev/null
+          done
+          find /etc/systemd /usr/lib/systemd /lib/systemd -name "*swap*" -type f -delete 2>/dev/null || true
+          find /etc/systemd /usr/lib/systemd /lib/systemd -name "*swap*" -type l -delete 2>/dev/null || true
+          find /etc/systemd/system -name "*.wants" -type d -exec sh -c "rm -f {}/*swap* {}/*swapfile*" \; 2>/dev/null || true
+          find /etc/systemd/system -name "*.requires" -type d -exec sh -c "rm -f {}/*swap* {}/*swapfile*" \; 2>/dev/null || true
+          sed -i '/swap/d' /etc/fstab
           sed -i '/swapfile/d' /etc/fstab
           rm -f /swapfile
+          swapoff -a 2>/dev/null || true
 
-          echo "[2/5] Writing 1GB bootargs to eMMC..."
+          echo "[2/6] Writing 1GB bootargs to eMMC..."
           dd if=/dev/zero of=/dev/mmcblk0p2 bs=1M count=1 2>/dev/null
-          printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=1G mmz=ddr,0,0,60M vmalloc=500M systemd.mask=create-swapfile.service blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=/dev/mmcblk0p2 bs=1 conv=notrunc 2>/dev/null
+          printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=1G mmz=ddr,0,0,60M vmalloc=500M systemd.mask=create-swapfile.service systemd.mask=swap-create.service systemd.mask=swapfile.service blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=/dev/mmcblk0p2 bs=1 conv=notrunc 2>/dev/null
 
-          echo "[3/5] Fixing DNS..."
+          echo "[3/6] Fixing DNS..."
           chattr -i /etc/resolv.conf 2>/dev/null
           rm -f /etc/resolv.conf
           echo 'nameserver 223.5.5.5' > /etc/resolv.conf
           echo 'nameserver 119.29.29.29' >> /etc/resolv.conf
           chattr +i /etc/resolv.conf 2>/dev/null || true
 
-          echo "[4/5] Fixing apt seccomp..."
+          echo "[4/6] Fixing apt seccomp..."
           mkdir -p /etc/apt/apt.conf.d
           echo 'APT::Sandbox::Seccomp "false";' > /etc/apt/apt.conf.d/99no-seccomp
           echo 'APT::Sandbox::User "root";' >> /etc/apt/apt.conf.d/99no-seccomp
 
-          echo "[5/5] Fixing ext4 filesystem..."
+          echo "[5/6] Fixing ext4 filesystem..."
           sync
+
+          echo "[6/6] Verifying no swap services remain..."
+          find /etc/systemd /usr/lib/systemd /lib/systemd -name "*swap*" 2>/dev/null | grep -v kill-swap | grep -v noswap || echo "OK: No swap units"
+
           echo "=== First boot fix complete! Rebooting in 3 seconds... ==="
           sleep 3
           reboot

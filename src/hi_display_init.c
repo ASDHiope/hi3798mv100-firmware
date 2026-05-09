@@ -126,24 +126,61 @@ void get_resolution(VO_INTF_SYNC_E sync, HI_U32 *w, HI_U32 *h) {
 
 int main(int argc, char *argv[])
 {
-    const char *resolution = (argc > 1) ? argv[1] : "1080p60";
-    int daemon_mode = (argc > 2 && strcmp(argv[2], "-d") == 0);
+    const char *resolution = "1080p60";
+    int daemon_mode = 0;
+    int keep_display = 1;
 
-    printf("Hi3798MV100 Display Init - Resolution: %s\n", resolution);
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-d") == 0) daemon_mode = 1;
+        else if (strcmp(argv[i], "--cleanup") == 0) keep_display = 0;
+        else resolution = argv[i];
+    }
+
+    printf("Hi3798MV100 Display Init - Resolution: %s, KeepDisplay: %s\n",
+           resolution, keep_display ? "YES" : "NO");
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
 
-    void *lib_msp = dlopen("libhi_msp.so", RTLD_NOW);
-    if (!lib_msp) {
-        lib_msp = dlopen("/usr/lib/libhi_msp.so", RTLD_NOW);
+    const char *sdk_lib_paths[] = {
+        "/opt/hisilicon/lib",
+        "/usr/local/lib",
+        "/usr/lib",
+        NULL
+    };
+
+    for (int i = 0; sdk_lib_paths[i]; i++) {
+        char path[256];
+        snprintf(path, sizeof(path), "%s/libpthread.so.0", sdk_lib_paths[i]);
+        void *h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+        if (h) { printf("Preloaded %s\n", path); break; }
     }
+    for (int i = 0; sdk_lib_paths[i]; i++) {
+        char path[256];
+        snprintf(path, sizeof(path), "%s/libdl.so.2", sdk_lib_paths[i]);
+        void *h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+        if (h) { printf("Preloaded %s\n", path); break; }
+    }
+    for (int i = 0; sdk_lib_paths[i]; i++) {
+        char path[256];
+        snprintf(path, sizeof(path), "%s/librt.so.1", sdk_lib_paths[i]);
+        void *h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+        if (h) { printf("Preloaded %s\n", path); break; }
+    }
+
+    void *lib_msp = dlopen("libhi_msp.so", RTLD_NOW);
     if (!lib_msp) {
         lib_msp = dlopen("/opt/hisilicon/lib/libhi_msp.so", RTLD_NOW);
     }
     if (!lib_msp) {
+        lib_msp = dlopen("/usr/lib/libhi_msp.so", RTLD_NOW);
+    }
+    if (!lib_msp) {
+        lib_msp = dlopen("/usr/local/lib/libhi_msp.so", RTLD_NOW);
+    }
+    if (!lib_msp) {
         printf("ERROR: Cannot load libhi_msp.so: %s\n", dlerror());
-        printf("Please install SDK libraries to /usr/lib/ or /opt/hisilicon/lib/\n");
+        printf("Please install SDK libraries to /opt/hisilicon/lib/ or /usr/lib/\n");
         return 1;
     }
     printf("Loaded libhi_msp.so\n");
@@ -170,6 +207,7 @@ int main(int argc, char *argv[])
     }
 
     HI_S32 s32Ret;
+    int vo_enabled = 0, layer_enabled = 0, hdmi_opened = 0, hdmi_started = 0;
     VO_INTF_SYNC_E vo_sync = get_vo_sync(resolution);
     HDMI_VIDEO_FMT_E hdmi_fmt = get_hdmi_fmt(vo_sync);
     HI_U32 width, height;
@@ -187,11 +225,12 @@ int main(int argc, char *argv[])
     stPubAttr.u32BgColor = 0x00000000;
 
     s32Ret = pVO_SetPubAttr(VO_DEV_HD, &stPubAttr);
-    if (s32Ret != HI_SUCCESS) { printf("VO_SetPubAttr failed: 0x%x\n", s32Ret); goto sys_exit; }
+    if (s32Ret != HI_SUCCESS) { printf("VO_SetPubAttr failed: 0x%x\n", s32Ret); goto cleanup; }
     printf("VO_SetPubAttr OK\n");
 
     s32Ret = pVO_Enable(VO_DEV_HD);
-    if (s32Ret != HI_SUCCESS) { printf("VO_Enable failed: 0x%x\n", s32Ret); goto sys_exit; }
+    if (s32Ret != HI_SUCCESS) { printf("VO_Enable failed: 0x%x\n", s32Ret); goto cleanup; }
+    vo_enabled = 1;
     printf("VO_Enable OK\n");
 
     VO_VIDEO_LAYER_ATTR_S stLayerAttr;
@@ -206,15 +245,17 @@ int main(int argc, char *argv[])
     stLayerAttr.enPixFormat = 0;
 
     s32Ret = pVO_SetVideoLayerAttr(VO_LAYER_VID, &stLayerAttr);
-    if (s32Ret != HI_SUCCESS) { printf("VO_SetVideoLayerAttr failed: 0x%x\n", s32Ret); goto vo_disable; }
+    if (s32Ret != HI_SUCCESS) { printf("VO_SetVideoLayerAttr failed: 0x%x\n", s32Ret); goto cleanup; }
     printf("VO_SetVideoLayerAttr OK\n");
 
     s32Ret = pVO_EnableVideoLayer(VO_LAYER_VID);
-    if (s32Ret != HI_SUCCESS) { printf("VO_EnableVideoLayer failed: 0x%x\n", s32Ret); goto vo_disable; }
+    if (s32Ret != HI_SUCCESS) { printf("VO_EnableVideoLayer failed: 0x%x\n", s32Ret); goto cleanup; }
+    layer_enabled = 1;
     printf("VO_EnableVideoLayer OK\n");
 
     s32Ret = pHDMI_Open(HDMI_ID_0);
-    if (s32Ret != HI_SUCCESS) { printf("HDMI_Open failed: 0x%x\n", s32Ret); goto layer_disable; }
+    if (s32Ret != HI_SUCCESS) { printf("HDMI_Open failed: 0x%x\n", s32Ret); goto cleanup; }
+    hdmi_opened = 1;
     printf("HDMI_Open OK\n");
 
     if (pHDMI_GetAttr && pHDMI_SetAttr) {
@@ -239,7 +280,8 @@ int main(int argc, char *argv[])
     }
 
     s32Ret = pHDMI_Start(HDMI_ID_0);
-    if (s32Ret != HI_SUCCESS) { printf("HDMI_Start failed: 0x%x\n", s32Ret); goto hdmi_close; }
+    if (s32Ret != HI_SUCCESS) { printf("HDMI_Start failed: 0x%x\n", s32Ret); goto cleanup; }
+    hdmi_started = 1;
     printf("HDMI_Start OK\n");
 
     printf("\n=== Display initialized: %s %ux%u via HDMI ===\n", resolution, width, height);
@@ -247,23 +289,29 @@ int main(int argc, char *argv[])
     if (daemon_mode) {
         printf("Running in daemon mode. Press Ctrl+C to stop.\n");
         while (g_run) { sleep(1); }
-        printf("Shutting down...\n");
+        printf("Shutting down display...\n");
+        keep_display = 0;
+    } else if (keep_display) {
+        printf("Display init complete. Display will remain active after exit.\n");
+        printf("Use --cleanup flag to deinitialize display on exit.\n");
+        dlclose(lib_msp);
+        return 0;
     } else {
-        printf("Display init complete. Keeping display active for 5 seconds...\n");
+        printf("Display init complete. Cleaning up in 5 seconds (--cleanup mode)...\n");
         sleep(5);
-        printf("Display will remain active after exit (modules stay loaded).\n");
     }
 
-    pHDMI_Stop(HDMI_ID_0);
-hdmi_close:
-    pHDMI_Close(HDMI_ID_0);
-layer_disable:
-    pVO_DisableVideoLayer(VO_LAYER_VID);
-vo_disable:
-    pVO_Disable(VO_DEV_HD);
-sys_exit:
-    pSYS_Exit();
+cleanup:
+    if (!keep_display || !hdmi_started) {
+        if (hdmi_started && pHDMI_Stop) pHDMI_Stop(HDMI_ID_0);
+        if (hdmi_opened && pHDMI_Close) pHDMI_Close(HDMI_ID_0);
+        if (layer_enabled && pVO_DisableVideoLayer) pVO_DisableVideoLayer(VO_LAYER_VID);
+        if (vo_enabled && pVO_Disable) pVO_Disable(VO_DEV_HD);
+        if (pSYS_Exit) pSYS_Exit();
+        printf("Display deinitialized.\n");
+    }
+
     dlclose(lib_msp);
-    printf("Display deinitialized.\n");
-    return 0;
+    printf("Done.\n");
+    return (hdmi_started && keep_display) ? 0 : 1;
 }

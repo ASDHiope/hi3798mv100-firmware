@@ -187,6 +187,16 @@ case "$1" in
         load_module hi_sync.ko   || log_warn "hi_sync failed"
         log_info "mali.ko skipped (causes kernel crash on Hi3798MV100, not needed for display)"
 
+        if command -v hi_display_init >/dev/null 2>&1; then
+            log_info "Initializing display via MPP API..."
+            hi_display_init 1080p60 2>/dev/null && log_info "Display initialized (1080p60)" || {
+                log_warn "1080p60 failed, trying 720p60..."
+                hi_display_init 720p60 2>/dev/null && log_info "Display initialized (720p60)" || log_error "Display init failed"
+            }
+        else
+            log_warn "hi_display_init not found - display will remain unconfigured"
+        fi
+
         log_info "Module loading complete. Errors: ${ERRORS}"
 
         if [ -e /dev/fb0 ]; then
