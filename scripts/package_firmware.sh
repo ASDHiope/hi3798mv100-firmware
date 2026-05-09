@@ -75,6 +75,7 @@ Flash via U-Boot TFTP:
 
 Flash via Linux (on device):
   dd if=hi_kernel_new.bin of=/dev/mmcblk0p6
+  dd if=bootargs_1g.bin of=/dev/mmcblk0p2
   reboot
 
 Flash rootfs (on device):
