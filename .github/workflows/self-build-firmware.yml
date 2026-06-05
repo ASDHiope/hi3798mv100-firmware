@@ -1,0 +1,143 @@
+name: Build Firmware (适配5.4内核)
+on:
+  workflow_dispatch:
+    inputs:
+      base_image_url:
+        description: 'URL to download base rootfs ext4 image (backup-32.raw)'
+        required: true
+        default: ''
+      kernel_artifact:
+        description: '5.4内核构建产物名称 (来自build-kernel-54.yml)'
+        required: true
+        default: 'hi3798mv100-linux5.4-mainline'
+
+jobs:
+  build-firmware:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential gcc-arm-linux-gnueabihf \
+            binutils-arm-linux-gnueabihf cpp-arm-linux-gnueabihf \
+            make gettext bison flex bc zlib1g-dev libncurses5-dev \
+            lzma u-boot-tools device-tree-compiler git cpio \
+            python3 python3-pyelftools libssl-dev wget \
+            qemu-user-static debootstrap dpkg-cross \
+            android-sdk-libsparse-utils e2fsprogs kmod
+
+      - name: Download base rootfs image
+        run: |
+          if [ -n "${{ github.event.inputs.base_image_url }}" ]; then
+            wget -q --show-progress "${{ github.event.inputs.base_image_url }}" -O backup-32.raw
+          else
+            echo "ERROR: No base image URL provided"
+            exit 1
+          fi
+          echo "Base image size: $(du -h backup-32.raw | cut -f1)"
+
+      - name: Download 5.4内核构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.event.inputs.kernel_artifact }}
+          path: kernel-artifact/
+
+      - name: 提取内核文件与模块
+        run: |
+          # 复制内核镜像
+          cp kernel-artifact/hi_kernel_new.bin .
+          # 提取内核模块(用于安装到rootfs)
+          mkdir -p kernel-modules
+          cp -r kernel-artifact/kmodules/lib/modules/* kernel-modules/
+          # 提取设备树与启动脚本
+          cp -r kernel-artifact/dtbs/ .
+          cp -r kernel-artifact/scripts/ .
+          echo "✅ 5.4内核提取完成"
+          echo "内核版本: $(strings hi_kernel_new.bin | grep "Linux version" | head -1)"
+          echo "内核模块数量: $(find kernel-modules -name "*.ko" | wc -l)"
+
+      - name: Modify rootfs (集成5.4内核模块与启动修复)
+        run: |
+          chmod +x scripts/modify_rootfs.sh
+          # 先运行原有的rootfs修改脚本
+          sudo bash scripts/modify_rootfs.sh backup-32.raw
+          
+          # 挂载rootfs安装5.4内核模块
+          mkdir -p /mnt/rootfs
+          sudo mount -o loop backup-32.raw /mnt/rootfs
+          
+          # 安装内核模块到/lib/modules
+          sudo cp -r kernel-modules/* /mnt/rootfs/lib/modules/
+          # 生成模块依赖
+          sudo depmod -a -b /mnt/rootfs $(ls kernel-modules/)
+          
+          # 安装first-boot-fix.sh并设置开机自启
+          sudo cp scripts/first_boot_fix.sh /mnt/rootfs/usr/local/bin/
+          sudo chmod +x /mnt/rootfs/usr/local/bin/first_boot_fix.sh
+          
+          # 创建systemd服务实现开机自动执行
+          sudo tee /mnt/rootfs/etc/systemd/system/first-boot-fix.service << 'EOF'
+[Unit]
+Description=Hi3798MV100 5.4内核首次启动修复
+Before=multi-user.target
+ConditionPathExists=!/etc/first-boot-completed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/first_boot_fix.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+          sudo ln -sf /etc/systemd/system/first-boot-fix.service \
+            /mnt/rootfs/etc/systemd/system/multi-user.target.wants/
+          
+          # 卸载rootfs
+          sudo umount /mnt/rootfs
+          echo "✅ Rootfs修改完成，已集成5.4内核模块与启动修复"
+
+      - name: Write 1GB bootargs partition image (适配5.4内核)
+        run: |
+          echo "=== Creating bootargs partition image ==="
+          dd if=/dev/zero of=bootargs_1g.bin bs=1M count=1 2>/dev/null
+          # 添加systemd.unified_cgroup_hierarchy=0解决5.4内核cgroup兼容问题
+          printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=1G mmz=ddr,0,0,60M vmalloc=500M systemd.unified_cgroup_hierarchy=0 systemd.mask=create-swapfile.service systemd.mask=swap-create.service systemd.mask=swapfile.service blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_1g.bin bs=1 conv=notrunc 2>/dev/null
+          echo "bootargs_1g.bin created: $(ls -lh bootargs_1g.bin | awk '{print $5}')"
+
+      - name: Package firmware
+        run: |
+          mkdir -p firmware_output
+
+          cp hi_kernel_new.bin firmware_output/
+          cp backup-32.raw firmware_output/
+          cp bootargs_1g.bin firmware_output/
+          cp -r dtbs/ firmware_output/
+
+          chmod +x scripts/package_firmware.sh
+          bash scripts/package_firmware.sh firmware_output/
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hi3798mv100-firmware-5.4
+          path: firmware_output/
+          retention-days: 30
+
+      - name: Create release
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: firmware-5.4-${{ github.run_number }}
+          name: Hi3798MV100 5.4内核固件 Build #${{ github.run_number }}
+          files: firmware_output/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
