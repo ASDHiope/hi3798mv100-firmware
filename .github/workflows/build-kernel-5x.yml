@@ -1,4 +1,4 @@
-name: Build Hi3798MV100 Linux 5.4 LTS Mainline
+name: Hi3798MV100 Linux5.4LTS
 on:
   workflow_dispatch
 
