@@ -1,4 +1,4 @@
-name: Hi3798MV100 Linux5.4LTS
+name: Build Hi3798MV100 Linux 5.4 LTS Mainline
 on:
   workflow_dispatch
 
@@ -99,7 +99,7 @@ jobs:
             echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100.dtb' >> ${{ env.SRC_DIR }}/arch/arm/boot/dts/Makefile
           fi
 
-      - name: Generate hi3798mv100_defconfig (clean localversion)
+      - name: Generate hi3798mv100_defconfig (clean localversion + 修复模块支持)
         run: |
           cd ${{ env.SRC_DIR }}
           cat > arch/arm/configs/hi3798mv100_defconfig <<'DEFCFG'
@@ -109,6 +109,13 @@ jobs:
           CONFIG_CPU_V7=y
           CONFIG_RAM_BASE=0x80000000
           CONFIG_CMDLINE="mem=1G console=ttyAMA0,115200"
+
+          # 模块支持(修复make modules错误)
+          CONFIG_MODULES=y
+          CONFIG_MODULE_UNLOAD=y
+          CONFIG_MODULE_FORCE_UNLOAD=y
+          CONFIG_MODVERSIONS=y
+          CONFIG_MODULE_SRCVERSION_ALL=y
 
           # Base fs
           CONFIG_DEVTMPFS=y
@@ -165,6 +172,8 @@ jobs:
           cd ${{ env.SRC_DIR }}
           make hi3798mv100_defconfig
           make olddefconfig
+          # 校验模块支持已启用
+          grep CONFIG_MODULES=y .config || echo "ERROR: Modules support NOT enabled!"
           # 校验无LOCALVERSION自定义字符串
           grep CONFIG_LOCALVERSION .config || echo "OK: No custom LOCALVERSION suffix"
 
@@ -237,6 +246,8 @@ jobs:
           ls -lh ${{ env.OUT_DIR }}
           echo "Kernel version info:"
           strings ${{ env.OUT_DIR }}/hi_kernel_new.bin | grep "Linux version" | head -2
+          echo "Modules count:"
+          find ${{ env.OUT_DIR }}/kmodules -name "*.ko" | wc -l
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
