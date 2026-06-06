@@ -505,12 +505,12 @@ jobs:
           path: ${{ env.FIRMWARE_OUT }}/
           retention-days: 30
 
-      - name: Create release
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: full-firmware-ubuntu22.04-${{ github.run_number }}
-          name: Hi3798MV100 完整固件 Ubuntu22.04+5.4+Docker Build #${{ github.run_number }}
-          files: ${{ env.FIRMWARE_OUT }}/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#      - name: Create release
+#        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+#        uses: softprops/action-gh-release@v1
+#        with:
+#          tag_name: full-firmware-ubuntu22.04-${{ github.run_number }}
+#          name: Hi3798MV100 完整固件 Ubuntu22.04+5.4+Docker Build #${{ github.run_number }}
+#          files: ${{ env.FIRMWARE_OUT }}/*
+#        env:
+#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
