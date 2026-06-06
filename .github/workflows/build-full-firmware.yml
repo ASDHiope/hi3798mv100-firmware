@@ -39,7 +39,7 @@ jobs:
             ${{ env.SRC_DIR }}
             ~/.cache/apt
             /var/cache/apt/archives
-          key: ${{ github.job }}-full-${{ hashFiles('.github/workflows/build-full-firmware.yml') }}
+          key: ${{ github.job }}-full-${{ hashFiles('.github/workflows/build-full-firmware.yml') }}-${{ hashFiles('dts/hi3798mv100.dts') }}
       
       # ====================== 第一阶段：安装所有依赖 ======================
       - name: Install all build dependencies
@@ -56,6 +56,11 @@ jobs:
 
           # 安装RootFS构建依赖
           sudo apt install -y debootstrap qemu-user-static binfmt-support e2fsprogs dosfstools kmod
+
+          # 修复缓存权限：清理apt不需要缓存的文件
+          sudo rm -f /var/cache/apt/archives/lock
+          sudo rm -rf /var/cache/apt/archives/partial
+          sudo apt clean
 
       # ====================== 第二阶段：构建5.4 Docker专用内核 ======================
       - name: Download Linux 5.4 (清华+中科大双源+格式校验)
