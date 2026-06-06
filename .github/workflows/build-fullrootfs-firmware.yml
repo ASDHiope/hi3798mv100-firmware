@@ -64,9 +64,8 @@ jobs:
             echo "=== Downloading Linux ${{ env.KERNEL_FULL }} ==="
             
             MIRRORS=(
-              "https://mirrors.tuna.tsinghua.edu.cn/kernel/v5.x/linux-${{ env.KERNEL_FULL }}.tar.xz"
-              "https://mirrors.ustc.edu.cn/kernel/v5.x/linux-${{ env.KERNEL_FULL }}.tar.xz"
-              "https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-${{ env.KERNEL_FULL }}.tar.xz"
+              "https://mirrors.huaweicloud.com/linux/kernel/v5.x/linux-${{ env.KERNEL_FULL }}.tar.xz"
+              "https://mirrors.aliyun.com/linux-kernel/v5.x/linux-${{ env.KERNEL_FULL }}.tar.xz"
             )
             
             for MIRROR in "${MIRRORS[@]}"; do
@@ -363,8 +362,7 @@ jobs:
               "overlay2.override_kernel_check=true"
             ],
             "registry-mirrors": [
-              "https://docker.mirrors.ustc.edu.cn",
-              "https://hub-mirror.c.163.com"
+              "https://docker.mirrors.aliyun.com"
             ]
           }
           EOF
@@ -372,9 +370,9 @@ jobs:
           # 预添加Docker官方GPG密钥和源(加速安装)
           sudo mkdir -p ${ROOTFS_DIR}/etc/apt/keyrings
           sudo wget -qO ${ROOTFS_DIR}/etc/apt/keyrings/docker.asc \
-            https://download.docker.com/linux/ubuntu/gpg
+            https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg
           sudo chmod a+r ${ROOTFS_DIR}/etc/apt/keyrings/docker.asc
-          echo "deb [arch=armhf signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu jammy stable" | \
+          echo "deb [arch=armhf signed-by=/etc/apt/keyrings/docker.asc] https://mirrors.aliyun.com/docker-ce/linux/ubuntu jammy stable" | \
             sudo tee ${ROOTFS_DIR}/etc/apt/sources.list.d/docker.list > /dev/null
           
           # 9. 清理 apt 缓存，减小镜像体积
@@ -453,7 +451,7 @@ jobs:
           [Install]
           WantedBy=multi-user.target
           EOF
-          sudo ln -sf /etc/systemd/system/first-boot-fix.service \
+          sudo ln -sf /mnt/rootfs/etc/systemd/system/first-boot-fix.service \
             /mnt/rootfs/etc/systemd/system/multi-user.target.wants/
           
           # 卸载RootFS
