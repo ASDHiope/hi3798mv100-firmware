@@ -230,14 +230,14 @@ jobs:
           ls -la ../${{ env.KERNEL_OUT }}/kmodules/lib/modules/
           echo "生成的内核模块数量: $(find ../${{ env.KERNEL_OUT }}/kmodules -name "*.ko" | wc -l)"
 
-      - name: 自动检测实际内核版本号(修复depmod错误核心)
+      - name: 从模块目录读取准确内核版本号(终极修复depmod错误)
         run: |
-          # 从编译好的内核镜像中提取准确版本号
-          KERNEL_VERSION=$(strings ${{ env.KERNEL_OUT }}/hi_kernel_new.bin | grep "Linux version" | awk '{print $3}')
+          # 直接从模块目录名获取版本号(100%准确，不会受主机内核影响)
+          KERNEL_VERSION=$(ls ${{ env.KERNEL_OUT }}/kmodules/lib/modules/)
           echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
           echo "✅ 检测到实际内核版本: $KERNEL_VERSION"
           
-          # 验证模块目录是否存在
+          # 验证模块目录存在
           if [ -d "${{ env.KERNEL_OUT }}/kmodules/lib/modules/$KERNEL_VERSION" ]; then
             echo "✅ 模块目录存在: ${{ env.KERNEL_OUT }}/kmodules/lib/modules/$KERNEL_VERSION"
           else
@@ -404,7 +404,7 @@ jobs:
           resize2fs -M ${{ env.ROOTFS_IMG }} || true
 
       # ====================== 第四阶段：集成内核与RootFS，打包固件 ======================
-      - name: Integrate kernel modules into RootFS (修复depmod错误)
+      - name: Integrate kernel modules into RootFS (终极修复depmod错误)
         run: |
           # 挂载RootFS
           sudo mkdir -p /mnt/rootfs
@@ -413,7 +413,7 @@ jobs:
           # 预创建目标目录
           sudo mkdir -p /mnt/rootfs/lib/modules/
           
-          # 1. 安装5.4内核模块(使用自动检测的版本号)
+          # 1. 安装5.4内核模块(使用从模块目录读取的准确版本号)
           echo "正在复制内核模块: ${{ env.KERNEL_VERSION }}"
           sudo cp -a ${{ env.KERNEL_OUT }}/kmodules/lib/modules/* /mnt/rootfs/lib/modules/
           
@@ -421,15 +421,15 @@ jobs:
           echo "复制后的模块目录:"
           ls -la /mnt/rootfs/lib/modules/
           
-          # 执行depmod(使用准确的内核版本号)
+          # 关键修复：明确指定内核版本号执行depmod，绝对不会误用主机版本
           echo "正在生成模块依赖..."
-          sudo depmod -a -b /mnt/rootfs ${{ env.KERNEL_VERSION }}
+          sudo depmod -a -b /mnt/rootfs "${{ env.KERNEL_VERSION }}"
           
           if [ $? -eq 0 ]; then
             echo "✅ 模块依赖生成成功"
           else
             echo "❌ depmod失败，详细错误:"
-            sudo depmod -a -b /mnt/rootfs ${{ env.KERNEL_VERSION }} -v
+            sudo depmod -a -b /mnt/rootfs "${{ env.KERNEL_VERSION }}" -v
             exit 1
           fi
           
@@ -451,7 +451,7 @@ jobs:
           [Install]
           WantedBy=multi-user.target
           EOF
-          sudo ln -sf /mnt/rootfs/etc/systemd/system/first-boot-fix.service \
+          sudo ln -sf /etc/systemd/system/first-boot-fix.service \
             /mnt/rootfs/etc/systemd/system/multi-user.target.wants/
           
           # 卸载RootFS
