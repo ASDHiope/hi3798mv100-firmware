@@ -39,7 +39,7 @@ jobs:
             ${{ env.SRC_DIR }}
             ~/.cache/apt
             /var/cache/apt/archives
-          key: ${{ github.job }}-full-${{ hashFiles('**/dts/hi3798mv100.dts', '.github/workflows/build-full-firmware.yml') }}
+          key: ${{ github.job }}-full-${{ hashFiles('.github/workflows/build-full-firmware.yml') }}-${{ hashFiles('**/dts/*.dts') }}
 
       # ====================== 第一阶段：安装所有依赖 ======================
       - name: Install all build dependencies
