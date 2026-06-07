@@ -12,6 +12,7 @@ jobs:
     timeout-minutes: 240
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      NODE_OPTIONS: "--no-deprecation"
       # 内核配置
       ARCH: arm
       CROSS_COMPILE: arm-linux-gnueabihf-
@@ -38,7 +39,6 @@ jobs:
           path: |
             ${{ env.SRC_DIR }}
             ~/.cache/apt
-            /var/cache/apt/archives
           key: ${{ github.job }}-full-${{ hashFiles('.github/workflows/build-full-firmware.yml') }}-${{ hashFiles('dts/hi3798mv100.dts') }}
       
       # ====================== 第一阶段：安装所有依赖 ======================
