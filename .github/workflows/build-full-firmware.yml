@@ -29,12 +29,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
 
       - name: Cache toolchain, kernel source and rootfs packages
-        uses: actions/cache@v6
+        uses: actions/cache@v5
         with:
           path: |
             ${{ env.SRC_DIR }}
