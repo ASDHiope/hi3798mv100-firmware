@@ -34,7 +34,7 @@ jobs:
           persist-credentials: false
 
       - name: Cache toolchain, kernel source and rootfs packages
-        uses: actions/cache@v3
+        uses: actions/cache@v6
         with:
           path: |
             ${{ env.SRC_DIR }}
