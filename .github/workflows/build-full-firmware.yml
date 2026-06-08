@@ -32,6 +32,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+          submodules: true  # 自动拉取你的HiSTBLinuxKernel子模块
 
       - name: Cache toolchain, kernel source and rootfs packages
         uses: actions/cache@v5
@@ -39,6 +40,7 @@ jobs:
           path: |
             ${{ env.SRC_DIR }}
             ~/.cache/apt
+            HiSTBLinuxV100R005C00SPC060  # 缓存SDK加速编译
           key: ${{ github.job }}-full-${{ hashFiles('.github/workflows/build-full-firmware.yml') }}-${{ hashFiles('dts/hi3798mv100.dts') }}
       
       # ====================== 第一阶段：安装所有依赖 ======================
@@ -54,7 +56,7 @@ jobs:
             u-boot-tools git wget cpio python3-pyelftools qemu-system-arm
           # 安装RootFS构建依赖
           sudo apt install -y debootstrap qemu-user-static binfmt-support e2fsprogs dosfstools kmod
-          # 【新增】Fastboot编译必需依赖
+          # Fastboot编译必需依赖
           sudo apt install -y libc6-dev-armhf-cross lib32z1 lib32stdc++6
           # 修复缓存权限：清理apt不需要缓存的文件
           sudo rm -f /var/cache/apt/archives/lock
@@ -191,7 +193,7 @@ jobs:
           CONFIG_MMC_BLOCK=y
           CONFIG_MMC_DW=y
           CONFIG_MMC_DW_HISI=y
-          # 【新增】兼容老Fastboot的ATAGS启动(解决Starting kernel卡住)
+          # 兼容老Fastboot的ATAGS启动(解决Starting kernel卡住)
           CONFIG_ATAGS=y
           CONFIG_ATAGS_PROC=y
           # Disable debug to shrink size
@@ -314,12 +316,13 @@ jobs:
           
           # 5. 配置 SSH 允许 root 远程登录
           echo "=> Configuring SSH..."
-          printf "PermitRootLogin yes\nPasswordAuthentication yes\n" | sudo tee -a ${ROOTFS_DIR}/etc/ssh/sshd_config > /dev/null
+          sudo sed -i 's/^#PermitRootLogin prohibit-password/PermitRootLogin yes/' ${ROOTFS_DIR}/etc/ssh/sshd_config
+          sudo chroot ${ROOTFS_DIR} systemctl enable ssh
           
-          # 6. 使用 Netplan 配置网卡 eth0
+          # 6. 使用 Netplan 配置网卡 eth0 自动DHCP
           echo "=> Writing Netplan network config..."
           sudo mkdir -p ${ROOTFS_DIR}/etc/netplan/
-          sudo tee ${ROOTFS_DIR}/etc/netplan/01-netcfg.yaml > /dev/null << 'EOF'
+          cat << 'EOF' | sudo tee ${ROOTFS_DIR}/etc/netplan/01-netcfg.yaml
           network:
             version: 2
             renderer: networkd
@@ -329,14 +332,13 @@ jobs:
                 macaddress: BC:25:E0:3F:F1:D9
           EOF
           # 7. 启用网络服务开机自启
-          echo "=> Enabling network service..."
           sudo chroot ${ROOTFS_DIR} systemctl enable systemd-networkd
           sudo chroot ${ROOTFS_DIR} systemctl enable systemd-resolved
           
           # 8. Docker预配置
           echo "=> Pre-configuring Docker environment..."
           # Docker必需的sysctl配置
-          sudo tee ${ROOTFS_DIR}/etc/sysctl.d/99-docker.conf << 'EOF'
+          cat << 'EOF' | sudo tee ${ROOTFS_DIR}/etc/sysctl.d/99-docker.conf
           # Docker网络必需
           net.ipv4.ip_forward=1
           net.bridge.bridge-nf-call-iptables=1
@@ -352,7 +354,7 @@ jobs:
           
           # 预配置Docker daemon.json(阿里云镜像加速)
           sudo mkdir -p ${ROOTFS_DIR}/etc/docker
-          sudo tee ${ROOTFS_DIR}/etc/docker/daemon.json << 'EOF'
+          cat << 'EOF' | sudo tee ${ROOTFS_DIR}/etc/docker/daemon.json
           {
             "log-driver": "json-file",
             "log-opts": {
@@ -380,7 +382,7 @@ jobs:
           
           # 9. 清理 apt 缓存，减小镜像体积
           sudo chroot ${ROOTFS_DIR} apt-get clean
-          sudo rm -rf ${ROOTFS_DIR}/var/lib/apt/lists/*
+          sudo rm -rf ${ROOTFS_DIR}/var/lib/apt/lists/* ${ROOTFS_DIR}/tmp/* ${ROOTFS_DIR}/var/tmp/*
       - name: Package RootFS to EXT4
         run: |
           DIR="./${{ env.ROOTFS_DIR }}"
@@ -397,7 +399,7 @@ jobs:
           
           # 挂载并复制文件系统内容
           sudo mkdir -p /mnt/temp
-          sudo mount -o loop ${{ env.ROOTFS_IMG }} /mnt/temp
+          sudo mount ${{ env.ROOTFS_IMG }} /mnt/temp
           sudo cp -a $DIR/. /mnt/temp/
           sudo umount /mnt/temp
           
@@ -438,25 +440,27 @@ jobs:
           sudo cp ${{ env.KERNEL_OUT }}/scripts/first_boot_fix.sh /mnt/rootfs/usr/local/bin/
           sudo chmod +x /mnt/rootfs/usr/local/bin/first_boot_fix.sh
           
-          sudo tee /mnt/rootfs/etc/systemd/system/first-boot-fix.service << 'EOF'
-          [Unit]
-          Description=Hi3798MV100 5.4内核首次启动修复
-          Before=multi-user.target
-          ConditionPathExists=!/etc/first-boot-completed
-          [Service]
-          Type=oneshot
-          ExecStart=/usr/local/bin/first_boot_fix.sh
-          RemainAfterExit=yes
-          [Install]
-          WantedBy=multi-user.target
-          EOF
+          cat << 'EOF' | sudo tee /mnt/rootfs/etc/systemd/system/first-boot-fix.service
+[Unit]
+Description=Hi3798MV100 5.4内核首次启动修复
+Before=multi-user.target
+ConditionPathExists=!/etc/first-boot-completed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/first_boot_fix.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
           sudo ln -sf /etc/systemd/system/first-boot-fix.service \
             /mnt/rootfs/etc/systemd/system/multi-user.target.wants/
           
           # 卸载RootFS
           sudo umount /mnt/rootfs
           echo "✅ 内核与RootFS集成完成"
-      # ====================== 【新增】生成多内存版本bootargs ======================
+      # ====================== 生成多内存版本bootargs ======================
       - name: Generate multi-version bootargs (1G/768M/512M)
         run: |
           echo "=== 生成所有内存版本的bootargs ==="
@@ -466,7 +470,7 @@ jobs:
           printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=1G mmz=ddr,0,0,60M vmalloc=500M systemd.unified_cgroup_hierarchy=1 systemd.mask=create-swapfile.service systemd.mask=swap-create.service systemd.mask=swapfile.service blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_1g.bin bs=1 conv=notrunc 2>/dev/null
           echo "✅ bootargs_1g.bin 生成完成"
           
-          # 768MB内存版本(解决你之前的启动卡住问题)
+          # 768MB内存版本(解决启动卡住问题)
           dd if=/dev/zero of=bootargs_768m.bin bs=1M count=1 2>/dev/null
           printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=768M mmz=ddr,0,0,48M vmalloc=500M systemd.unified_cgroup_hierarchy=1 systemd.mask=create-swapfile.service systemd.mask=swap-create.service systemd.mask=swapfile.service blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_768m.bin bs=1 conv=notrunc 2>/dev/null
           echo "✅ bootargs_768m.bin 生成完成"
@@ -475,7 +479,7 @@ jobs:
           dd if=/dev/zero of=bootargs_512m.bin bs=1M count=1 2>/dev/null
           printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=512M mmz=ddr,0,0,32M vmalloc=500M systemd.unified_cgroup_hierarchy=1 systemd.mask=create-swapfile.service systemd.mask=swap-create.service systemd.mask=swapfile.service blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_512m.bin bs=1 conv=notrunc 2>/dev/null
           echo "✅ bootargs_512m.bin 生成完成"
-      # ====================== 【优化】完整Fastboot编译 ======================
+      # ====================== 编译Fastboot ======================
       - name: Compile Fastboot from HiSTB SDK
         run: |
           echo "=== 开始编译Fastboot ==="
@@ -493,11 +497,10 @@ jobs:
               echo "✅ Fastboot编译成功，文件大小: $(du -h fastboot.bin | cut -f1)"
               cp fastboot.bin ../../../
             else
-              echo "⚠️ Fastboot编译失败，将使用默认fastboot"
+              echo "⚠️ Fastboot编译失败，将不包含fastboot.bin"
             fi
           else
             echo "⚠️ 未检测到HiSTB SDK，跳过Fastboot编译"
-            echo "💡 提示：如果需要编译Fastboot，请将HiSTBLinuxV100R005C00SPC060目录放入仓库根目录"
           fi
       - name: Package final firmware
         run: |
