@@ -48,22 +48,20 @@ jobs:
           sudo sed -i 's/archive.ubuntu.com/mirrors.huaweicloud.com/g' /etc/apt/sources.list
           sudo sed -i 's/security.ubuntu.com/mirrors.huaweicloud.com/g' /etc/apt/sources.list
           sudo apt update
-
           # 安装内核编译依赖
           sudo apt install -y build-essential gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
             flex bison bc libncurses5-dev zlib1g-dev libssl-dev libelf-dev device-tree-compiler \
             u-boot-tools git wget cpio python3-pyelftools qemu-system-arm
-
           # 安装RootFS构建依赖
           sudo apt install -y debootstrap qemu-user-static binfmt-support e2fsprogs dosfstools kmod
-
+          # 【新增】Fastboot编译必需依赖
+          sudo apt install -y libc6-dev-armhf-cross lib32z1 lib32stdc++6
           # 修复缓存权限：清理apt不需要缓存的文件
           sudo rm -f /var/cache/apt/archives/lock
           sudo rm -rf /var/cache/apt/archives/partial
           sudo apt clean
-
       # ====================== 第二阶段：构建5.4 Docker专用内核 ======================
-      - name: Download Linux 5.4 (清华+中科大双源+格式校验)
+      - name: Download Linux 5.4 (华为云+阿里云双国内源+格式校验)
         run: |
           if [ ! -d ${{ env.SRC_DIR }} ];then
             echo "=== Downloading Linux ${{ env.KERNEL_FULL }} ==="
@@ -107,7 +105,6 @@ jobs:
           else
             echo "✅ Using cached kernel source"
           fi
-
       - name: Import board DTS from repo dts folder
         run: |
           mkdir -p ${{ env.SRC_DIR }}/arch/arm/boot/dts
@@ -115,8 +112,7 @@ jobs:
             cp ./dts/hi3798mv100.dts ${{ env.SRC_DIR }}/arch/arm/boot/dts/
             echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100.dtb' >> ${{ env.SRC_DIR }}/arch/arm/boot/dts/Makefile
           fi
-
-      - name: Generate hi3798mv100_defconfig (完整Docker cgroup v2支持)
+      - name: Generate hi3798mv100_defconfig (完整Docker cgroup v2支持+ATAGS兼容)
         run: |
           cd ${{ env.SRC_DIR }}
           cat > arch/arm/configs/hi3798mv100_defconfig <<'DEFCFG'
@@ -126,14 +122,12 @@ jobs:
           CONFIG_CPU_V7=y
           CONFIG_RAM_BASE=0x80000000
           CONFIG_CMDLINE="mem=1G console=ttyAMA0,115200"
-
           # 模块支持
           CONFIG_MODULES=y
           CONFIG_MODULE_UNLOAD=y
           CONFIG_MODULE_FORCE_UNLOAD=y
           CONFIG_MODVERSIONS=y
           CONFIG_MODULE_SRCVERSION_ALL=y
-
           # 完整cgroup v2支持(Docker 20.10+必需)
           CONFIG_CGROUPS=y
           CONFIG_CGROUP_FREEZER=y
@@ -151,7 +145,6 @@ jobs:
           CONFIG_CGROUP_NET_PRIO=y
           CONFIG_CGROUP_NET_CLASSID=y
           CONFIG_CGROUP_V2=y
-
           # Base fs
           CONFIG_DEVTMPFS=y
           CONFIG_DEVTMPFS_MOUNT=y
@@ -162,7 +155,6 @@ jobs:
           CONFIG_OVERLAY_FS=y
           CONFIG_OVERLAY_FS_REDIRECT_DIR=y
           CONFIG_OVERLAY_FS_INDEX=y
-
           # Basic posix feature
           CONFIG_POSIX_MQUEUE=y
           CONFIG_SIGNALFD=y
@@ -174,7 +166,6 @@ jobs:
           CONFIG_FHANDLE=y
           CONFIG_SYSFS=y
           CONFIG_PROC_FS=y
-
           # Docker网络必需
           CONFIG_NET=y
           CONFIG_INET=y
@@ -195,13 +186,14 @@ jobs:
           CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
           CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
           CONFIG_NETFILTER_XT_MATCH_IPVS=y
-
           # MMC & Storage
           CONFIG_MMC=y
           CONFIG_MMC_BLOCK=y
           CONFIG_MMC_DW=y
           CONFIG_MMC_DW_HISI=y
-
+          # 【新增】兼容老Fastboot的ATAGS启动(解决Starting kernel卡住)
+          CONFIG_ATAGS=y
+          CONFIG_ATAGS_PROC=y
           # Disable debug to shrink size
           CONFIG_DEBUG_FS=n
           CONFIG_DEBUG_KERNEL=n
@@ -210,7 +202,6 @@ jobs:
           # 清空LOCALVERSION配置，无自定义后缀
           sed -i '/CONFIG_LOCALVERSION/d' arch/arm/configs/hi3798mv100_defconfig
           sed -i '/CONFIG_LOCALVERSION_AUTO/d' arch/arm/configs/hi3798mv100_defconfig
-
       - name: Kernel make config
         run: |
           cd ${{ env.SRC_DIR }}
@@ -219,7 +210,7 @@ jobs:
           # 校验Docker必需配置
           grep CONFIG_CGROUP_V2=y .config || echo "ERROR: cgroup v2 NOT enabled!"
           grep CONFIG_OVERLAY_FS=y .config || echo "ERROR: overlay fs NOT enabled!"
-
+          grep CONFIG_ATAGS=y .config || echo "ERROR: ATAGS NOT enabled!"
       - name: Compile kernel zImage / dtb / modules
         run: |
           mkdir -p ${{ env.KERNEL_OUT }}/kmodules ${{ env.KERNEL_OUT }}/dtbs
@@ -234,7 +225,6 @@ jobs:
           echo "=== 内核模块目录结构 ==="
           ls -la ../${{ env.KERNEL_OUT }}/kmodules/lib/modules/
           echo "生成的内核模块数量: $(find ../${{ env.KERNEL_OUT }}/kmodules -name "*.ko" | wc -l)"
-
       - name: 从模块目录读取准确内核版本号(终极修复depmod错误)
         run: |
           # 直接从模块目录名获取版本号(100%准确，不会受主机内核影响)
@@ -250,15 +240,26 @@ jobs:
             ls -la ${{ env.KERNEL_OUT }}/kmodules/lib/modules/
             exit 1
           fi
-
-      - name: Generate first-boot fix script (Docker优化版)
+      - name: Generate first-boot fix script (Docker优化版+多内存自动适配)
         run: |
           mkdir -p ${{ env.KERNEL_OUT }}/scripts
           cat > ${{ env.KERNEL_OUT }}/scripts/first_boot_fix.sh <<'SHEOF'
           #!/bin/sh
           swapoff -a; sed -i '/swap/d' /etc/fstab; rm -rf /swapfile
           dd if=/dev/zero of=/dev/mmcblk0p2 bs=1M count=1
-          printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=1G mmz=ddr,0,0,60M vmalloc=500M systemd.unified_cgroup_hierarchy=1 blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)'|dd of=/dev/mmcblk0p2 bs=1 conv=notrunc
+          # 自动检测内存大小并设置对应bootargs
+          MEM_SIZE=$(free -m | awk '/^Mem:/{print $2}')
+          if [ $MEM_SIZE -gt 700 ]; then
+            MMZ_SIZE=60M
+            MEM_PARAM=mem=1G
+          elif [ $MEM_SIZE -gt 450 ]; then
+            MMZ_SIZE=48M
+            MEM_PARAM=mem=768M
+          else
+            MMZ_SIZE=32M
+            MEM_PARAM=mem=512M
+          fi
+          printf "model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload $MEM_PARAM mmz=ddr,0,0,$MMZ_SIZE vmalloc=500M systemd.unified_cgroup_hierarchy=1 blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)"|dd of=/dev/mmcblk0p2 bs=1 conv=notrunc
           chattr -i /etc/resolv.conf;echo -e 'nameserver 223.5.5.5\nnameserver 119.29.29.29'>/etc/resolv.conf;chattr +i /etc/resolv.conf
           mkdir -p /etc/apt/apt.conf.d;echo 'APT::Sandbox::Seccomp "false";'>/etc/apt/apt.conf.d/99no-seccomp
           # Docker首次启动优化
@@ -269,7 +270,6 @@ jobs:
           sleep 3;reboot
           SHEOF
           chmod +x ${{ env.KERNEL_OUT }}/scripts/first_boot_fix.sh
-
       # ====================== 第三阶段：构建Ubuntu 22.04 RootFS ======================
       - name: Create RootFS via Debootstrap (华为云源)
         run: |
@@ -277,7 +277,6 @@ jobs:
           sudo debootstrap --arch=armhf --foreign jammy ./${{ env.ROOTFS_DIR }} http://mirrors.huaweicloud.com/ubuntu-ports/
           # 复制 QEMU 模拟器，以便后续 chroot 执行命令
           sudo cp /usr/bin/qemu-arm-static ./${{ env.ROOTFS_DIR }}/usr/bin/
-
       - name: Finalize System and Set Config (Docker预配置)
         run: |
           export ROOTFS_DIR="./${{ env.ROOTFS_DIR }}"
@@ -344,7 +343,6 @@ jobs:
           net.bridge.bridge-nf-call-ip6tables=1
           net.ipv4.conf.all.forwarding=1
           net.ipv4.conf.default.forwarding=1
-
           # 优化Docker内存使用(机顶盒1GB内存专用)
           vm.swappiness=0
           vm.overcommit_memory=1
@@ -352,7 +350,7 @@ jobs:
           vm.dirty_background_ratio=2
           EOF
           
-          # 预配置Docker daemon.json
+          # 预配置Docker daemon.json(阿里云镜像加速)
           sudo mkdir -p ${ROOTFS_DIR}/etc/docker
           sudo tee ${ROOTFS_DIR}/etc/docker/daemon.json << 'EOF'
           {
@@ -372,7 +370,7 @@ jobs:
           }
           EOF
           
-          # 预添加Docker官方GPG密钥和源(加速安装)
+          # 预添加Docker阿里云GPG密钥和源(国内可访问)
           sudo mkdir -p ${ROOTFS_DIR}/etc/apt/keyrings
           sudo wget -qO ${ROOTFS_DIR}/etc/apt/keyrings/docker.asc \
             https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg
@@ -383,7 +381,6 @@ jobs:
           # 9. 清理 apt 缓存，减小镜像体积
           sudo chroot ${ROOTFS_DIR} apt-get clean
           sudo rm -rf ${ROOTFS_DIR}/var/lib/apt/lists/*
-
       - name: Package RootFS to EXT4
         run: |
           DIR="./${{ env.ROOTFS_DIR }}"
@@ -407,7 +404,6 @@ jobs:
           # 检查文件系统并压缩镜像到最小体积
           e2fsck -f -y ${{ env.ROOTFS_IMG }} || true
           resize2fs -M ${{ env.ROOTFS_IMG }} || true
-
       # ====================== 第四阶段：集成内核与RootFS，打包固件 ======================
       - name: Integrate kernel modules into RootFS (终极修复depmod错误)
         run: |
@@ -447,12 +443,10 @@ jobs:
           Description=Hi3798MV100 5.4内核首次启动修复
           Before=multi-user.target
           ConditionPathExists=!/etc/first-boot-completed
-
           [Service]
           Type=oneshot
           ExecStart=/usr/local/bin/first_boot_fix.sh
           RemainAfterExit=yes
-
           [Install]
           WantedBy=multi-user.target
           EOF
@@ -462,15 +456,49 @@ jobs:
           # 卸载RootFS
           sudo umount /mnt/rootfs
           echo "✅ 内核与RootFS集成完成"
-
-      - name: Write 1GB bootargs partition image (启用cgroup v2)
+      # ====================== 【新增】生成多内存版本bootargs ======================
+      - name: Generate multi-version bootargs (1G/768M/512M)
         run: |
-          echo "=== Creating bootargs partition image ==="
+          echo "=== 生成所有内存版本的bootargs ==="
+          
+          # 1GB内存版本
           dd if=/dev/zero of=bootargs_1g.bin bs=1M count=1 2>/dev/null
-          # 关键修改：systemd.unified_cgroup_hierarchy=1 强制启用cgroup v2
           printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=1G mmz=ddr,0,0,60M vmalloc=500M systemd.unified_cgroup_hierarchy=1 systemd.mask=create-swapfile.service systemd.mask=swap-create.service systemd.mask=swapfile.service blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_1g.bin bs=1 conv=notrunc 2>/dev/null
-          echo "bootargs_1g.bin created: $(ls -lh bootargs_1g.bin | awk '{print $5}')"
-
+          echo "✅ bootargs_1g.bin 生成完成"
+          
+          # 768MB内存版本(解决你之前的启动卡住问题)
+          dd if=/dev/zero of=bootargs_768m.bin bs=1M count=1 2>/dev/null
+          printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=768M mmz=ddr,0,0,48M vmalloc=500M systemd.unified_cgroup_hierarchy=1 systemd.mask=create-swapfile.service systemd.mask=swap-create.service systemd.mask=swapfile.service blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_768m.bin bs=1 conv=notrunc 2>/dev/null
+          echo "✅ bootargs_768m.bin 生成完成"
+          
+          # 512MB内存版本
+          dd if=/dev/zero of=bootargs_512m.bin bs=1M count=1 2>/dev/null
+          printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=512M mmz=ddr,0,0,32M vmalloc=500M systemd.unified_cgroup_hierarchy=1 systemd.mask=create-swapfile.service systemd.mask=swap-create.service systemd.mask=swapfile.service blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_512m.bin bs=1 conv=notrunc 2>/dev/null
+          echo "✅ bootargs_512m.bin 生成完成"
+      # ====================== 【优化】完整Fastboot编译 ======================
+      - name: Compile Fastboot from HiSTB SDK
+        run: |
+          echo "=== 开始编译Fastboot ==="
+          if [ -d ./HiSTBLinuxV100R005C00SPC060/source/boot ];then
+            echo "✅ 检测到HiSTB SDK，开始编译Fastboot"
+            cd ./HiSTBLinuxV100R005C00SPC060/source/boot
+            
+            # 清理之前的编译产物
+            make clean || true
+            
+            # 编译Fastboot
+            make -j$(nproc) CROSS_COMPILE=${{ env.CROSS_COMPILE }}
+            
+            if [ -f fastboot.bin ]; then
+              echo "✅ Fastboot编译成功，文件大小: $(du -h fastboot.bin | cut -f1)"
+              cp fastboot.bin ../../../
+            else
+              echo "⚠️ Fastboot编译失败，将使用默认fastboot"
+            fi
+          else
+            echo "⚠️ 未检测到HiSTB SDK，跳过Fastboot编译"
+            echo "💡 提示：如果需要编译Fastboot，请将HiSTBLinuxV100R005C00SPC060目录放入仓库根目录"
+          fi
       - name: Package final firmware
         run: |
           mkdir -p ${{ env.FIRMWARE_OUT }}
@@ -478,14 +506,15 @@ jobs:
           # 复制所有刷机必需文件
           cp ${{ env.KERNEL_OUT }}/hi_kernel_new.bin ${{ env.FIRMWARE_OUT }}/
           cp ${{ env.ROOTFS_IMG }} ${{ env.FIRMWARE_OUT }}/backup-32.raw
-          cp bootargs_1g.bin ${{ env.FIRMWARE_OUT }}/
           cp -r ${{ env.KERNEL_OUT }}/dtbs/ ${{ env.FIRMWARE_OUT }}/
-
-          # 如果有原SDK的fastboot.bin也复制过来
-          if [ -d ./HiSTBLinuxV100R005C00SPC060/source/boot ];then
-            cd ./HiSTBLinuxV100R005C00SPC060/source/boot
-            make -j$(nproc) || true
-            [ -f fastboot.bin ] && cp fastboot.bin ../../../${{ env.FIRMWARE_OUT }}/
+          
+          # 复制所有版本的bootargs
+          cp bootargs_*.bin ${{ env.FIRMWARE_OUT }}/
+          
+          # 复制编译好的Fastboot(如果有)
+          if [ -f fastboot.bin ]; then
+            cp fastboot.bin ${{ env.FIRMWARE_OUT }}/
+            echo "✅ 已包含编译好的Fastboot"
           fi
 
           # 执行原有的打包脚本(如果有)
@@ -493,7 +522,6 @@ jobs:
             chmod +x scripts/package_firmware.sh
             bash scripts/package_firmware.sh ${{ env.FIRMWARE_OUT }}/
           fi
-
       - name: Final artifact check
         run: |
           echo "=== 最终固件产物列表 ==="
@@ -502,7 +530,12 @@ jobs:
           strings ${{ env.FIRMWARE_OUT }}/hi_kernel_new.bin | grep "Linux version" | head -2
           echo "RootFS镜像大小:"
           du -h ${{ env.FIRMWARE_OUT }}/backup-32.raw
-
+          echo "Bootargs版本:"
+          ls -lh ${{ env.FIRMWARE_OUT }}/bootargs_*.bin
+          if [ -f ${{ env.FIRMWARE_OUT }}/fastboot.bin ]; then
+            echo "Fastboot版本:"
+            strings ${{ env.FIRMWARE_OUT }}/fastboot.bin | grep "Fastboot" | head -1
+          fi
       - name: Upload full firmware artifact
         uses: actions/upload-artifact@v6
         with:
