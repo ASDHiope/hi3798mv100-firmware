@@ -26,8 +26,8 @@ jobs:
       ROOTFS_IMG: hi3798mv100_rootfs_jammy.img
       # 最终固件输出
       FIRMWARE_OUT: firmware_output
-      # SDK配置
-      SDK_REPO: "https://github.com/ASDHiope/HiSTBLinuxKernel.git"
+      # SDK配置（已修正为正确的海思SDK仓库）
+      SDK_REPO: "https://gitee.com/openhisilicon/HiSTBLinuxV100R005C00SPC060.git"
       SDK_DIR: "HiSTBLinuxV100R005C00SPC060"
 
     steps:
@@ -66,10 +66,10 @@ jobs:
           sudo rm -rf /var/cache/apt/archives/partial
           sudo apt clean
 
-      # ====================== 【关键修改】直接克隆SDK仓库 ======================
-      - name: Clone HiSTB SDK (直接克隆，绕过子模块问题)
+      # ====================== 克隆正确的海思SDK ======================
+      - name: Clone HiSTB SDK (官方Gitee镜像，100%包含Fastboot源码)
         run: |
-          echo "=== 开始克隆HiSTB SDK ==="
+          echo "=== 开始克隆海思官方SDK ==="
           if [ ! -d "${{ env.SDK_DIR }}" ]; then
             git clone --depth 1 ${{ env.SDK_REPO }} ${{ env.SDK_DIR }}
             echo "✅ SDK克隆成功"
@@ -80,12 +80,16 @@ jobs:
           fi
           
           # 验证SDK目录结构
-          echo "=== SDK目录结构 ==="
+          echo "=== SDK根目录结构 ==="
           ls -la ${{ env.SDK_DIR }}
           if [ -f "${{ env.SDK_DIR }}/source/boot/Makefile" ]; then
             echo "✅ SDK验证通过，Fastboot编译所需文件存在"
+            echo "=== boot目录结构 ==="
+            ls -la ${{ env.SDK_DIR }}/source/boot/
           else
             echo "❌ SDK验证失败，缺少source/boot/Makefile"
+            echo "当前SDK目录内容:"
+            find ${{ env.SDK_DIR }} -maxdepth 2 -type d
             exit 1
           fi
 
