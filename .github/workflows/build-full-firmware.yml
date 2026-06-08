@@ -2,10 +2,6 @@ name: Build Full Firmware (Ubuntu 24.04 LTS + 4.4.y Kernel)
 on:
   workflow_dispatch:
     inputs:
-      base_image_url:
-        description: 'URL to download base rootfs ext4 image (backup-32.raw)'
-        required: true
-        default: ''
       kernel_artifact:
         description: 'Kernel build artifact name (empty = build kernel too)'
         required: false
@@ -17,17 +13,20 @@ concurrency:
 
 jobs:
   build-firmware:
-    runs-on: ubuntu-22.04  # 注意：Ubuntu 24.04 runner编译4.4.y内核会有gcc版本问题，用22.04更稳定
-    timeout-minutes: 180
+    runs-on: ubuntu-22.04  # 4.4.y内核不支持gcc-13，用22.04最稳定
+    timeout-minutes: 240
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       NODE_OPTIONS: "--no-deprecation"
-      # SDK配置（使用国内Gitee可用镜像）
+      # SDK配置
       SDK_REPO: "https://gitee.com/lh736/HiSTBLinuxV100R005C00SPC060.git"
       SDK_DIR: "HiSTBLinuxV100R005C00SPC060"
       # 内核配置
       KERNEL_VERSION: "4.4.35"
       KERNEL_MIRROR: "https://mirrors.huaweicloud.com/linux/kernel/v4.x"
+      # RootFS配置
+      ROOTFS_DIR: "ubuntu-noble-armhf-rootfs"
+      ROOTFS_IMG: "backup-32.raw"
       # 最终输出
       FIRMWARE_OUT: "firmware_output"
 
@@ -38,15 +37,16 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Cache SDK and kernel source
+      - name: Cache SDK, kernel source and apt packages
         uses: actions/cache@v5
         with:
           path: |
             ${{ env.SDK_DIR }}
             linux-${{ env.KERNEL_VERSION }}.tar.gz
-          key: ${{ github.job }}-sdk-kernel-${{ hashFiles('.github/workflows/build-firmware.yml') }}
+            ~/.cache/apt
+          key: ${{ github.job }}-sdk-kernel-apt-${{ hashFiles('.github/workflows/build-firmware.yml') }}
       
-      # ====================== 第一阶段：安装依赖 ======================
+      # ====================== 第一阶段：安装所有依赖 ======================
       - name: Install all build dependencies
         run: |
           # 替换为华为云Ubuntu源加速
@@ -54,43 +54,178 @@ jobs:
           sudo sed -i 's/security.ubuntu.com/mirrors.huaweicloud.com/g' /etc/apt/sources.list
           sudo apt update
           
-          # 安装编译依赖（添加gcc-9兼容4.4.y内核）
+          # 安装编译依赖（gcc-9兼容4.4.y内核）
           sudo apt install -y \
             build-essential gcc-9-arm-linux-gnueabihf g++-9-arm-linux-gnueabihf \
             binutils-arm-linux-gnueabihf cpp-arm-linux-gnueabihf \
             make gettext bison flex bc zlib1g-dev libncurses5-dev \
             lzma u-boot-tools device-tree-compiler git cpio \
             python3 python3-pyelftools libssl-dev wget \
-            qemu-user-static debootstrap dpkg-cross \
-            android-sdk-libsparse-utils e2fsprogs lib32z1 lib32stdc++6
+            qemu-user-static debootstrap binfmt-support e2fsprogs \
+            lib32z1 lib32stdc++6 dosfstools kmod
           
-          # 设置gcc-9为默认arm编译器（4.4.y内核不支持gcc-11+）
+          # 设置gcc-9为默认arm编译器
           sudo update-alternatives --install /usr/bin/arm-linux-gnueabihf-gcc arm-linux-gnueabihf-gcc /usr/bin/arm-linux-gnueabihf-gcc-9 90
           sudo update-alternatives --install /usr/bin/arm-linux-gnueabihf-g++ arm-linux-gnueabihf-g++ /usr/bin/arm-linux-gnueabihf-g++-9 90
           
           # 验证编译器版本
           arm-linux-gnueabihf-gcc --version
+          
+          # 修复缓存权限
+          sudo rm -f /var/cache/apt/archives/lock
+          sudo rm -rf /var/cache/apt/archives/partial
+          sudo apt clean
 
-      # ====================== 第二阶段：下载基础根文件系统 ======================
-      - name: Download Ubuntu 24.04 base rootfs image
+      # ====================== 第二阶段：自动构建Ubuntu 24.04根文件系统 ======================
+      - name: Build Ubuntu 24.04 Noble armhf RootFS (华为云源)
         run: |
-          if [ -n "${{ github.event.inputs.base_image_url }}" ]; then
-            echo "=== 下载基础根文件系统 ==="
-            wget -q --show-progress "${{ github.event.inputs.base_image_url }}" -O backup-32.raw
-            
-            # 验证文件完整性
-            if [ -f backup-32.raw ] && [ $(stat -c %s backup-32.raw) -gt 100000000 ]; then
-              echo "✅ 基础镜像下载成功，大小: $(du -h backup-32.raw | cut -f1)"
-            else
-              echo "❌ 基础镜像下载失败或文件损坏"
-              exit 1
-            fi
-          else
-            echo "❌ 错误：未提供基础镜像URL"
-            exit 1
-          fi
+          echo "=== 开始构建Ubuntu 24.04根文件系统 ==="
+          
+          # 1. 下载基础系统
+          sudo debootstrap --arch=armhf --foreign noble ./${{ env.ROOTFS_DIR }} http://mirrors.huaweicloud.com/ubuntu-ports/
+          
+          # 2. 复制QEMU模拟器
+          sudo cp /usr/bin/qemu-arm-static ./${{ env.ROOTFS_DIR }}/usr/bin/
+          
+          # 3. 完成第二阶段安装
+          echo "=> 执行debootstrap第二阶段..."
+          sudo chroot ${ROOTFS_DIR} /debootstrap/debootstrap --second-stage
+          
+          # 4. 挂载proc和sys
+          sudo mount -t proc /proc ${ROOTFS_DIR}/proc
+          sudo mount -t sysfs /sys ${ROOTFS_DIR}/sys
+          
+          # 5. 安装基础软件包
+          echo "=> 安装基础软件包..."
+          sudo chroot ${ROOTFS_DIR} apt-get update
+          sudo chroot ${ROOTFS_DIR} apt-get install -y --no-install-recommends \
+            systemd openssh-server iproute2 net-tools iputils-ping \
+            vim nano curl wget htop sudo lsb-release procps \
+            ca-certificates gnupg lsb-release dnsutils lsof rsync \
+            tree unzip zip xz-utils
+          
+          # 6. 配置APT源（华为云）
+          echo "=> 配置APT源..."
+          cat << 'EOF' | sudo tee ${ROOTFS_DIR}/etc/apt/sources.list
+          deb https://mirrors.huaweicloud.com/ubuntu-ports/ noble main restricted universe multiverse
+          deb https://mirrors.huaweicloud.com/ubuntu-ports/ noble-updates main restricted universe multiverse
+          deb https://mirrors.huaweicloud.com/ubuntu-ports/ noble-security main restricted universe multiverse
+          EOF
+          
+          # 7. 设置root密码
+          echo "=> 设置root密码..."
+          sudo chroot ${ROOTFS_DIR} /bin/bash -c 'echo "root:123456" | chpasswd'
+          
+          # 8. 配置SSH允许root登录
+          echo "=> 配置SSH..."
+          sudo sed -i 's/^#PermitRootLogin prohibit-password/PermitRootLogin yes/' ${ROOTFS_DIR}/etc/ssh/sshd_config
+          sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' ${ROOTFS_DIR}/etc/ssh/sshd_config
+          sudo chroot ${ROOTFS_DIR} systemctl enable ssh
+          
+          # 9. 配置网络（Netplan）
+          echo "=> 配置网络..."
+          sudo mkdir -p ${ROOTFS_DIR}/etc/netplan/
+          cat << 'EOF' | sudo tee ${ROOTFS_DIR}/etc/netplan/01-netcfg.yaml
+          network:
+            version: 2
+            renderer: networkd
+            ethernets:
+              eth0:
+                dhcp4: true
+                macaddress: BC:25:E0:3F:F1:D9
+          EOF
+          sudo chroot ${ROOTFS_DIR} systemctl enable systemd-networkd
+          sudo chroot ${ROOTFS_DIR} systemctl enable systemd-resolved
+          
+          # 10. 设置时区
+          echo "=> 设置时区..."
+          sudo chroot ${ROOTFS_DIR} /bin/bash -c '
+            export TZ=Asia/Shanghai
+            ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+            echo "Asia/Shanghai" > /etc/timezone
+            dpkg-reconfigure -f noninteractive tzdata
+          '
+          
+          # 11. 配置主机名
+          echo "=> 配置主机名..."
+          echo "hi3798mv100" | sudo tee ${ROOTFS_DIR}/etc/hostname
+          echo "127.0.0.1   localhost hi3798mv100" | sudo tee ${ROOTFS_DIR}/etc/hosts
+          
+          # 12. 配置DNS
+          echo "nameserver 223.5.5.5" | sudo tee ${ROOTFS_DIR}/etc/resolv.conf
+          echo "nameserver 119.29.29.29" | sudo tee -a ${ROOTFS_DIR}/etc/resolv.conf
+          
+          # 13. 预配置Docker环境
+          echo "=> 预配置Docker环境..."
+          # Docker必需的sysctl配置
+          sudo tee ${ROOTFS_DIR}/etc/sysctl.d/99-docker.conf << 'EOF'
+          net.ipv4.ip_forward=1
+          net.bridge.bridge-nf-call-iptables=1
+          net.bridge.bridge-nf-call-ip6tables=1
+          net.ipv4.conf.all.forwarding=1
+          net.ipv4.conf.default.forwarding=1
+          vm.swappiness=0
+          vm.overcommit_memory=1
+          EOF
+          
+          # Docker daemon配置（阿里云镜像加速）
+          sudo mkdir -p ${ROOTFS_DIR}/etc/docker
+          sudo tee ${ROOTFS_DIR}/etc/docker/daemon.json << 'EOF'
+          {
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "10m",
+              "max-file": "3"
+            },
+            "exec-opts": ["native.cgroupdriver=systemd"],
+            "storage-driver": "overlay2",
+            "registry-mirrors": [
+              "https://docker.mirrors.aliyun.com"
+            ]
+          }
+          EOF
+          
+          # 添加Docker阿里云源
+          sudo mkdir -p ${ROOTFS_DIR}/etc/apt/keyrings
+          sudo wget -qO ${ROOTFS_DIR}/etc/apt/keyrings/docker.asc \
+            https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg
+          sudo chmod a+r ${ROOTFS_DIR}/etc/apt/keyrings/docker.asc
+          echo "deb [arch=armhf signed-by=/etc/apt/keyrings/docker.asc] https://mirrors.aliyun.com/docker-ce/linux/ubuntu noble stable" | \
+            sudo tee ${ROOTFS_DIR}/etc/apt/sources.list.d/docker.list > /dev/null
+          
+          # 14. 清理缓存减小体积
+          echo "=> 清理系统缓存..."
+          sudo chroot ${ROOTFS_DIR} apt-get clean
+          sudo rm -rf ${ROOTFS_DIR}/var/lib/apt/lists/*
+          sudo rm -rf ${ROOTFS_DIR}/tmp/* ${ROOTFS_DIR}/var/tmp/*
+          sudo rm -rf ${ROOTFS_DIR}/usr/share/doc/* ${ROOTFS_DIR}/usr/share/man/*
+          
+          # 15. 卸载挂载
+          sudo umount ${ROOTFS_DIR}/proc
+          sudo umount ${ROOTFS_DIR}/sys
+          
+          # 16. 打包为EXT4镜像
+          echo "=> 打包为EXT4镜像..."
+          SIZE=$(sudo du -sm ${ROOTFS_DIR} | cut -f1)
+          IMAGE_SIZE=$((SIZE + 200))  # 预留200MB空间
+          echo "根文件系统大小: ${SIZE}MB, 创建镜像大小: ${IMAGE_SIZE}MB"
+          
+          dd if=/dev/zero of=${{ env.ROOTFS_IMG }} bs=1M count=$IMAGE_SIZE status=progress
+          mkfs.ext4 -F ${{ env.ROOTFS_IMG }}
+          
+          sudo mkdir -p /mnt/temp
+          sudo mount ${{ env.ROOTFS_IMG }} /mnt/temp
+          sudo cp -a ${ROOTFS_DIR}/. /mnt/temp/
+          sudo umount /mnt/temp
+          
+          # 压缩镜像到最小体积
+          e2fsck -f -y ${{ env.ROOTFS_IMG }} || true
+          resize2fs -M ${{ env.ROOTFS_IMG }} || true
+          
+          echo "✅ Ubuntu 24.04根文件系统构建完成"
+          echo "最终镜像大小: $(du -h ${{ env.ROOTFS_IMG }} | cut -f1)"
 
-      # ====================== 第三阶段：编译4.4.y内核（从海思SDK） ======================
+      # ====================== 第三阶段：编译4.4.y内核 ======================
       - name: Build 4.4.y kernel from HiSTB SDK
         if: github.event.inputs.kernel_artifact == ''
         run: |
@@ -115,12 +250,11 @@ jobs:
             echo "✅ 使用缓存的内核源码"
           fi
           
-          # 解压并修复SDK内核脚本缺失问题
+          # 修复SDK内核脚本缺失
           echo "修复SDK内核脚本..."
           tar xzf "linux-${{ env.KERNEL_VERSION }}.tar.gz"
           SDK_KERNEL="${{ env.SDK_DIR }}/source/kernel/linux-4.4.y"
           
-          # 复制缺失的编译脚本
           [ ! -d "${SDK_KERNEL}/scripts/basic" ] && cp -r "linux-${{ env.KERNEL_VERSION }}/scripts/basic/" "${SDK_KERNEL}/scripts/"
           [ ! -d "${SDK_KERNEL}/scripts/kconfig" ] && cp -r "linux-${{ env.KERNEL_VERSION }}/scripts/kconfig/" "${SDK_KERNEL}/scripts/"
           
@@ -141,7 +275,7 @@ jobs:
           # 复制编译好的内核
           if [ -f "out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin" ]; then
             cp out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin ../hi_kernel_new.bin
-            echo "✅ 内核编译成功，文件大小: $(du -h ../hi_kernel_new.bin | cut -f1)"
+            echo "✅ 内核编译成功，大小: $(du -h ../hi_kernel_new.bin | cut -f1)"
           else
             echo "❌ 内核编译失败"
             exit 1
@@ -155,38 +289,97 @@ jobs:
           name: ${{ github.event.inputs.kernel_artifact }}
           path: kernel-artifact/
 
-      # ====================== 第五阶段：修改根文件系统 ======================
-      - name: Modify Ubuntu 24.04 rootfs
-        run: |
-          if [ -f "scripts/modify_rootfs.sh" ]; then
-            chmod +x scripts/modify_rootfs.sh
-            echo "=== 开始修改根文件系统 ==="
-            sudo bash scripts/modify_rootfs.sh backup-32.raw
-          else
-            echo "⚠️ 未找到modify_rootfs.sh脚本，跳过根文件系统修改"
-          fi
-
-      # ====================== 第六阶段：生成多内存版本bootargs ======================
+      # ====================== 第五阶段：生成多内存版本bootargs ======================
       - name: Generate multi-version bootargs (1G/768M/512M)
         run: |
           echo "=== 生成所有内存版本的bootargs ==="
           
           # 1GB内存版本
           dd if=/dev/zero of=bootargs_1g.bin bs=1M count=1 2>/dev/null
-          printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=1G mmz=ddr,0,0,60M vmalloc=500M systemd.unified_cgroup_hierarchy=1 systemd.mask=create-swapfile.service blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_1g.bin bs=1 conv=notrunc 2>/dev/null
+          printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=1G mmz=ddr,0,0,60M vmalloc=500M systemd.unified_cgroup_hierarchy=1 blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_1g.bin bs=1 conv=notrunc 2>/dev/null
           echo "✅ bootargs_1g.bin 生成完成"
           
           # 768MB内存版本
           dd if=/dev/zero of=bootargs_768m.bin bs=1M count=1 2>/dev/null
-          printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=768M mmz=ddr,0,0,48M vmalloc=500M systemd.unified_cgroup_hierarchy=1 systemd.mask=create-swapfile.service blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_768m.bin bs=1 conv=notrunc 2>/dev/null
+          printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=768M mmz=ddr,0,0,48M vmalloc=500M systemd.unified_cgroup_hierarchy=1 blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_768m.bin bs=1 conv=notrunc 2>/dev/null
           echo "✅ bootargs_768m.bin 生成完成"
           
           # 512MB内存版本
           dd if=/dev/zero of=bootargs_512m.bin bs=1M count=1 2>/dev/null
-          printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=512M mmz=ddr,0,0,32M vmalloc=500M systemd.unified_cgroup_hierarchy=1 systemd.mask=create-swapfile.service blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_512m.bin bs=1 conv=notrunc 2>/dev/null
+          printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=512M mmz=ddr,0,0,32M vmalloc=500M systemd.unified_cgroup_hierarchy=1 blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_512m.bin bs=1 conv=notrunc 2>/dev/null
           echo "✅ bootargs_512m.bin 生成完成"
 
-      # ====================== 第七阶段：打包固件 ======================
+      # ====================== 第六阶段：集成内核模块到根文件系统 ======================
+      - name: Integrate kernel modules into RootFS
+        run: |
+          echo "=== 集成内核模块到根文件系统 ==="
+          
+          # 挂载根文件系统
+          sudo mkdir -p /mnt/rootfs
+          sudo mount -o loop ${{ env.ROOTFS_IMG }} /mnt/rootfs
+          
+          # 复制内核模块
+          if [ -d "${{ env.SDK_DIR }}/out/hi3798mv100/hi3798mdmo1g/kmod" ]; then
+            echo "复制内核模块..."
+            sudo cp -a ${{ env.SDK_DIR }}/out/hi3798mv100/hi3798mdmo1g/kmod/lib/modules/* /mnt/rootfs/lib/modules/
+            
+            # 生成模块依赖
+            KERNEL_VERSION=$(ls ${{ env.SDK_DIR }}/out/hi3798mv100/hi3798mdmo1g/kmod/lib/modules/)
+            echo "检测到内核版本: $KERNEL_VERSION"
+            sudo depmod -a -b /mnt/rootfs "$KERNEL_VERSION"
+            echo "✅ 内核模块集成完成"
+          else
+            echo "⚠️ 未找到内核模块目录，跳过模块集成"
+          fi
+          
+          # 添加首次启动修复脚本
+          echo "添加首次启动修复脚本..."
+          sudo tee /mnt/rootfs/usr/local/bin/first_boot_fix.sh << 'EOF'
+          #!/bin/sh
+          swapoff -a; sed -i '/swap/d' /etc/fstab; rm -rf /swapfile
+          dd if=/dev/zero of=/dev/mmcblk0p2 bs=1M count=1
+          # 自动检测内存并设置bootargs
+          MEM_SIZE=$(free -m | awk '/^Mem:/{print $2}')
+          if [ $MEM_SIZE -gt 700 ]; then
+            MMZ_SIZE=60M
+            MEM_PARAM=mem=1G
+          elif [ $MEM_SIZE -gt 450 ]; then
+            MMZ_SIZE=48M
+            MEM_PARAM=mem=768M
+          else
+            MMZ_SIZE=32M
+            MEM_PARAM=mem=512M
+          fi
+          printf "model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload $MEM_PARAM mmz=ddr,0,0,$MMZ_SIZE vmalloc=500M systemd.unified_cgroup_hierarchy=1 blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)"|dd of=/dev/mmcblk0p2 bs=1 conv=notrunc
+          chattr -i /etc/resolv.conf;echo -e 'nameserver 223.5.5.5\nnameserver 119.29.29.29'>/etc/resolv.conf;chattr +i /etc/resolv.conf
+          mkdir -p /etc/apt/apt.conf.d;echo 'APT::Sandbox::Seccomp "false";'>/etc/apt/apt.conf.d/99no-seccomp
+          sync;resize2fs /dev/mmcblk0p9
+          touch /etc/first-boot-completed
+          sleep 3;reboot
+          EOF
+          sudo chmod +x /mnt/rootfs/usr/local/bin/first_boot_fix.sh
+          
+          # 设置开机自启
+          sudo tee /mnt/rootfs/etc/systemd/system/first-boot-fix.service << 'EOF'
+          [Unit]
+          Description=Hi3798MV100首次启动修复
+          Before=multi-user.target
+          ConditionPathExists=!/etc/first-boot-completed
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/first_boot_fix.sh
+          RemainAfterExit=yes
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          sudo ln -sf /etc/systemd/system/first-boot-fix.service \
+            /mnt/rootfs/etc/systemd/system/multi-user.target.wants/
+          
+          # 卸载根文件系统
+          sudo umount /mnt/rootfs
+          echo "✅ 根文件系统集成完成"
+
+      # ====================== 第七阶段：打包最终固件 ======================
       - name: Package final firmware
         run: |
           mkdir -p ${{ env.FIRMWARE_OUT }}
@@ -204,7 +397,7 @@ jobs:
           fi
           
           # 复制根文件系统
-          cp backup-32.raw ${{ env.FIRMWARE_OUT }}/
+          cp ${{ env.ROOTFS_IMG }} ${{ env.FIRMWARE_OUT }}/
           
           # 复制所有版本的bootargs
           cp bootargs_*.bin ${{ env.FIRMWARE_OUT }}/
@@ -215,24 +408,13 @@ jobs:
             bash scripts/package_firmware.sh ${{ env.FIRMWARE_OUT }}/
           fi
           
-          echo "=== 最终固件产物 ==="
+          echo "=== 最终固件产物列表 ==="
           ls -lh ${{ env.FIRMWARE_OUT }}/
 
       # ====================== 第八阶段：上传固件 ======================
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: hi3798mv100-ubuntu24.04-4.4y-firmware
+          name: hi3798mv100-ubuntu24.04-4.4y-full-firmware
           path: ${{ env.FIRMWARE_OUT }}/
           retention-days: 30
-
-      # ====================== 可选：自动创建Release ======================
-      # - name: Create GitHub Release
-      #   if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-      #   uses: softprops/action-gh-release@v6
-      #   with:
-      #     tag_name: ubuntu24.04-4.4y-${{ github.run_number }}
-      #     name: Hi3798MV100 Ubuntu 24.04 + 4.4.y Kernel Build #${{ github.run_number }}
-      #     files: ${{ env.FIRMWARE_OUT }}/*
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
