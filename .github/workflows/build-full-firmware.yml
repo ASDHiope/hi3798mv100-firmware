@@ -43,7 +43,7 @@ jobs:
             ${{ env.SDK_DIR }}
             linux-${{ env.KERNEL_VERSION }}.tar.gz
             ~/.cache/apt
-          key: ${{ github.job }}-sdk-kernel-apt-v9-${{ hashFiles('.github/workflows/build-firmware.yml') }}
+          key: ${{ github.job }}-sdk-kernel-apt-v10-${{ hashFiles('.github/workflows/build-firmware.yml') }}
       
       # ====================== 第一阶段：安装所有依赖 ======================
       - name: Install all build dependencies
@@ -53,13 +53,13 @@ jobs:
           sudo sed -i 's/security.ubuntu.com/mirrors.huaweicloud.com/g' /etc/apt/sources.list
           sudo apt update
           
-          # 安装编译依赖（32位兼容库是海思工具链必需）
+          # 安装编译依赖（Ubuntu 22.04兼容的32位库）
           sudo apt install -y \
             build-essential make gettext bison flex bc zlib1g-dev libncurses5-dev \
             lzma u-boot-tools device-tree-compiler git cpio \
             python3 python3-pyelftools libssl-dev wget \
             qemu-user-static debootstrap binfmt-support e2fsprogs \
-            lib32z1 lib32stdc++6 lib32gcc1 libc6-i386 dosfstools kmod
+            lib32z1 lib32stdc++6 lib32gcc-s1 libc6-i386 dosfstools kmod
           
           # 修复缓存权限
           sudo rm -f /var/cache/apt/archives/lock
