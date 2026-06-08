@@ -43,7 +43,7 @@ jobs:
             ${{ env.SDK_DIR }}
             linux-${{ env.KERNEL_VERSION }}.tar.gz
             ~/.cache/apt
-          key: ${{ github.job }}-sdk-kernel-apt-v7-${{ hashFiles('.github/workflows/build-firmware.yml') }}
+          key: ${{ github.job }}-sdk-kernel-apt-v9-${{ hashFiles('.github/workflows/build-firmware.yml') }}
       
       # ====================== 第一阶段：安装所有依赖 ======================
       - name: Install all build dependencies
@@ -53,22 +53,13 @@ jobs:
           sudo sed -i 's/security.ubuntu.com/mirrors.huaweicloud.com/g' /etc/apt/sources.list
           sudo apt update
           
-          # 安装编译依赖（gcc-9兼容4.4.y内核）
+          # 安装编译依赖（32位兼容库是海思工具链必需）
           sudo apt install -y \
-            build-essential gcc-9-arm-linux-gnueabihf g++-9-arm-linux-gnueabihf \
-            binutils-arm-linux-gnueabihf cpp-arm-linux-gnueabihf \
-            make gettext bison flex bc zlib1g-dev libncurses5-dev \
+            build-essential make gettext bison flex bc zlib1g-dev libncurses5-dev \
             lzma u-boot-tools device-tree-compiler git cpio \
             python3 python3-pyelftools libssl-dev wget \
             qemu-user-static debootstrap binfmt-support e2fsprogs \
-            lib32z1 lib32stdc++6 dosfstools kmod
-          
-          # 设置gcc-9为默认arm编译器
-          sudo update-alternatives --install /usr/bin/arm-linux-gnueabihf-gcc arm-linux-gnueabihf-gcc /usr/bin/arm-linux-gnueabihf-gcc-9 90
-          sudo update-alternatives --install /usr/bin/arm-linux-gnueabihf-g++ arm-linux-gnueabihf-g++ /usr/bin/arm-linux-gnueabihf-g++-9 90
-          
-          # 验证编译器版本
-          arm-linux-gnueabihf-gcc --version
+            lib32z1 lib32stdc++6 lib32gcc1 libc6-i386 dosfstools kmod
           
           # 修复缓存权限
           sudo rm -f /var/cache/apt/archives/lock
@@ -103,11 +94,11 @@ jobs:
           deb https://mirrors.huaweicloud.com/ubuntu-ports/ noble-backports main restricted universe multiverse
           EOF
           
-          # 6. 更新APT缓存（关键修复）
+          # 6. 更新APT缓存
           echo "=> 更新APT缓存..."
           sudo chroot ${ROOTFS_DIR} apt-get update -y
           
-          # 7. 安装基础软件包（添加--fix-missing）
+          # 7. 安装基础软件包
           echo "=> 安装基础软件包..."
           sudo chroot ${ROOTFS_DIR} apt-get install -y --no-install-recommends --fix-missing \
             systemd openssh-server iproute2 net-tools iputils-ping \
@@ -125,7 +116,7 @@ jobs:
           sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' ${ROOTFS_DIR}/etc/ssh/sshd_config
           sudo chroot ${ROOTFS_DIR} systemctl enable ssh
           
-          # 10. 配置网络（Netplan）
+          # 10. 配置网络
           echo "=> 配置网络..."
           sudo mkdir -p ${ROOTFS_DIR}/etc/netplan/
           cat << 'EOF' | sudo tee ${ROOTFS_DIR}/etc/netplan/01-netcfg.yaml
@@ -160,7 +151,6 @@ jobs:
           
           # 14. 预配置Docker环境
           echo "=> 预配置Docker环境..."
-          # Docker必需的sysctl配置
           sudo tee ${ROOTFS_DIR}/etc/sysctl.d/99-docker.conf << 'EOF'
           net.ipv4.ip_forward=1
           net.bridge.bridge-nf-call-iptables=1
@@ -171,7 +161,6 @@ jobs:
           vm.overcommit_memory=1
           EOF
           
-          # Docker daemon配置（阿里云镜像加速）
           sudo mkdir -p ${ROOTFS_DIR}/etc/docker
           sudo tee ${ROOTFS_DIR}/etc/docker/daemon.json << 'EOF'
           {
@@ -188,7 +177,6 @@ jobs:
           }
           EOF
           
-          # 添加Docker阿里云源
           sudo mkdir -p ${ROOTFS_DIR}/etc/apt/keyrings
           sudo wget -qO ${ROOTFS_DIR}/etc/apt/keyrings/docker.asc \
             https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg
@@ -196,7 +184,7 @@ jobs:
           echo "deb [arch=armhf signed-by=/etc/apt/keyrings/docker.asc] https://mirrors.aliyun.com/docker-ce/linux/ubuntu noble stable" | \
             sudo tee ${ROOTFS_DIR}/etc/apt/sources.list.d/docker.list > /dev/null
           
-          # 15. 清理缓存减小体积
+          # 15. 清理缓存
           echo "=> 清理系统缓存..."
           sudo chroot ${ROOTFS_DIR} apt-get clean
           sudo rm -rf ${ROOTFS_DIR}/var/lib/apt/lists/*
@@ -210,7 +198,7 @@ jobs:
           # 17. 打包为EXT4镜像
           echo "=> 打包为EXT4镜像..."
           SIZE=$(sudo du -sm ${ROOTFS_DIR} | cut -f1)
-          IMAGE_SIZE=$((SIZE + 200))  # 预留200MB空间
+          IMAGE_SIZE=$((SIZE + 200))
           echo "根文件系统大小: ${SIZE}MB, 创建镜像大小: ${IMAGE_SIZE}MB"
           
           dd if=/dev/zero of=${{ env.ROOTFS_IMG }} bs=1M count=$IMAGE_SIZE status=progress
@@ -221,14 +209,13 @@ jobs:
           sudo cp -a ${ROOTFS_DIR}/. /mnt/temp/
           sudo umount /mnt/temp
           
-          # 压缩镜像到最小体积
           e2fsck -f -y ${{ env.ROOTFS_IMG }} || true
           resize2fs -M ${{ env.ROOTFS_IMG }} || true
           
           echo "✅ Ubuntu 24.04根文件系统构建完成"
           echo "最终镜像大小: $(du -h ${{ env.ROOTFS_IMG }} | cut -f1)"
 
-      # ====================== 第三阶段：编译4.4.y内核（绝对路径终极修复） ======================
+      # ====================== 第三阶段：编译4.4.y内核（最终验证版） ======================
       - name: Build 4.4.y kernel from HiSTB SDK
         if: github.event.inputs.kernel_artifact == ''
         run: |
@@ -239,10 +226,13 @@ jobs:
           FIND=/usr/bin/find
           PWD=/bin/pwd
           RM=/bin/rm
-          MKDIR=/bin/mkdir
           TAR=/bin/tar
           WGET=/usr/bin/wget
           FILE=/usr/bin/file
+          GREP=/bin/grep
+          SED=/bin/sed
+          HEAD=/usr/bin/head
+          WHICH=/usr/bin/which
           
           $ECHO "=== 开始编译4.4.y内核 ==="
           
@@ -263,7 +253,7 @@ jobs:
           
           # 清理可能损坏的缓存文件
           if [ -f "$KERNEL_FILE" ]; then
-            if ! $FILE "$KERNEL_FILE" | $ECHO grep -q "gzip compressed data"; then
+            if ! $FILE "$KERNEL_FILE" | $GREP -q "gzip compressed data"; then
               $ECHO "⚠️ 缓存文件损坏，删除重新下载"
               $RM -f "$KERNEL_FILE"
             fi
@@ -282,7 +272,7 @@ jobs:
               $WGET -c --tries=3 --show-progress -O "$KERNEL_FILE" "$MIRROR"
               
               # 验证文件格式
-              if [ -f "$KERNEL_FILE" ] && $FILE "$KERNEL_FILE" | $ECHO grep -q "gzip compressed data"; then
+              if [ -f "$KERNEL_FILE" ] && $FILE "$KERNEL_FILE" | $GREP -q "gzip compressed data"; then
                 $ECHO "✅ 内核源码下载成功，文件格式验证通过"
                 break
               else
@@ -317,13 +307,37 @@ jobs:
           # 复制配置文件
           $CP configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
           
-          # 加载SDK环境变量（这会破坏PATH，但我们后面用绝对路径）
+          # 正确处理PATH环境变量（最终解决方案）
+          # 1. 保存原始系统PATH
+          ORIGINAL_PATH=$PATH
+          
+          # 2. 加载SDK环境变量（这会设置CROSS_COMPILE和SDK工具链路径）
           source env.sh
           
-          # 强制恢复系统PATH（双重保险）
-          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          # 3. 提取SDK工具链路径（精确匹配）
+          SDK_TOOLCHAIN_PATH=$($ECHO $PATH | tr ':' '\n' | $GREP 'prebuilts/toolchains/arm-histbv310-linux/bin' | $HEAD -1)
           
-          $ECHO "开始编译内核（SDK自动包含模块编译）..."
+          # 4. 恢复系统PATH，然后追加SDK工具链路径
+          export PATH=$ORIGINAL_PATH:$SDK_TOOLCHAIN_PATH
+          
+          # 5. 验证交叉编译器
+          $ECHO "验证交叉编译器..."
+          if $WHICH arm-histbv310-linux-gcc > /dev/null; then
+            $ECHO "✅ 海思交叉编译器可用: $($WHICH arm-histbv310-linux-gcc)"
+            arm-histbv310-linux-gcc --version
+          else
+            $ECHO "⚠️ 海思交叉编译器未找到，使用标准arm-linux-gnueabihf-gcc"
+            # 安装标准arm编译器作为备用
+            sudo apt update
+            sudo apt install -y gcc-9-arm-linux-gnueabihf g++-9-arm-linux-gnueabihf
+            sudo update-alternatives --install /usr/bin/arm-linux-gnueabihf-gcc arm-linux-gnueabihf-gcc /usr/bin/arm-linux-gnueabihf-gcc-9 90
+            sudo update-alternatives --install /usr/bin/arm-linux-gnueabihf-g++ arm-linux-gnueabihf-g++ /usr/bin/arm-linux-gnueabihf-g++-9 90
+            # 修改内核Makefile使用标准编译器
+            $SED -i 's/CROSS_COMPILE ?= arm-histbv310-linux-/CROSS_COMPILE ?= arm-linux-gnueabihf-/g' ${SDK_KERNEL}/Makefile
+            $ECHO "✅ 已修改内核Makefile使用标准arm-linux-gnueabihf-gcc"
+          fi
+          
+          $ECHO "开始编译内核..."
           make linux -j$(nproc)
           
           # 复制编译好的内核
@@ -335,21 +349,18 @@ jobs:
             exit 1
           fi
           
-          # 使用find命令自动查找内核模块目录（不再硬编码路径）
+          # 自动查找内核模块目录
           $ECHO "查找SDK生成的内核模块目录..."
-          MODULES_DIR=$($FIND out -type d -path "*lib/modules" | head -1)
+          MODULES_DIR=$($FIND out -type d -path "*lib/modules" | $HEAD -1)
           
           if [ -n "$MODULES_DIR" ] && [ -d "$MODULES_DIR" ]; then
             $ECHO "✅ 找到内核模块目录: $($PWD)/$MODULES_DIR"
             $ECHO "MODULES_DIR=$($PWD)/$MODULES_DIR" >> $GITHUB_ENV
           else
             $ECHO "⚠️ 未找到内核模块目录"
-            # 列出所有可能的目录用于调试
-            $ECHO "=== 所有lib目录 ==="
             $FIND out -name "lib" -type d
           fi
           
-          # 列出输出目录结构（使用绝对路径ls）
           $ECHO "=== SDK输出目录结构 ==="
           $LS -la out/hi3798mv100/hi3798mdmo1g/
 
