@@ -441,19 +441,19 @@ jobs:
           sudo chmod +x /mnt/rootfs/usr/local/bin/first_boot_fix.sh
           
           cat << 'EOF' | sudo tee /mnt/rootfs/etc/systemd/system/first-boot-fix.service
-[Unit]
-Description=Hi3798MV100 5.4内核首次启动修复
-Before=multi-user.target
-ConditionPathExists=!/etc/first-boot-completed
+          [Unit]
+          Description=Hi3798MV100 5.4内核首次启动修复
+          Before=multi-user.target
+          ConditionPathExists=!/etc/first-boot-completed
 
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/first_boot_fix.sh
-RemainAfterExit=yes
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/first_boot_fix.sh
+          RemainAfterExit=yes
 
-[Install]
-WantedBy=multi-user.target
-EOF
+          [Install]
+          WantedBy=multi-user.target
+          EOF
           sudo ln -sf /etc/systemd/system/first-boot-fix.service \
             /mnt/rootfs/etc/systemd/system/multi-user.target.wants/
           
