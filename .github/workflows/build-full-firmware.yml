@@ -43,7 +43,7 @@ jobs:
             ${{ env.SDK_DIR }}
             linux-${{ env.KERNEL_VERSION }}.tar.gz
             ~/.cache/apt
-          key: ${{ github.job }}-sdk-kernel-apt-v3-${{ hashFiles('.github/workflows/build-firmware.yml') }}
+          key: ${{ github.job }}-sdk-kernel-apt-v4-${{ hashFiles('.github/workflows/build-firmware.yml') }}
       
       # ====================== 第一阶段：安装所有依赖 ======================
       - name: Install all build dependencies
@@ -228,7 +228,7 @@ jobs:
           echo "✅ Ubuntu 24.04根文件系统构建完成"
           echo "最终镜像大小: $(du -h ${{ env.ROOTFS_IMG }} | cut -f1)"
 
-      # ====================== 第三阶段：编译4.4.y内核（多源重试+格式验证） ======================
+      # ====================== 第三阶段：编译4.4.y内核（强制编译模块+自动查找路径） ======================
       - name: Build 4.4.y kernel from HiSTB SDK
         if: github.event.inputs.kernel_artifact == ''
         run: |
@@ -299,13 +299,15 @@ jobs:
             cp ./dts/hi3798mv100.dts "${SDK_KERNEL}/arch/arm/boot/dts/"
           fi
           
-          # 配置并编译内核
+          # 配置并编译内核（强制编译和安装模块）
           cd ${{ env.SDK_DIR }}
           cp configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
           source env.sh
           
-          echo "开始编译内核..."
+          echo "开始编译内核和模块..."
           make linux -j$(nproc)
+          make modules -j$(nproc)
+          make modules_install INSTALL_MOD_PATH=../modules_install
           
           # 复制编译好的内核
           if [ -f "out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin" ]; then
@@ -315,6 +317,10 @@ jobs:
             echo "❌ 内核编译失败"
             exit 1
           fi
+          
+          # 保存模块目录路径到环境变量
+          echo "MODULES_DIR=$(pwd)/../modules_install/lib/modules" >> $GITHUB_ENV
+          echo "✅ 内核模块已安装到: $MODULES_DIR"
 
       # ====================== 第四阶段：下载预编译内核（可选） ======================
       - name: Download prebuilt kernel artifact
@@ -344,7 +350,7 @@ jobs:
           printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=512M mmz=ddr,0,0,32M vmalloc=500M systemd.unified_cgroup_hierarchy=1 blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_512m.bin bs=1 conv=notrunc 2>/dev/null
           echo "✅ bootargs_512m.bin 生成完成"
 
-      # ====================== 第六阶段：集成内核模块到根文件系统 ======================
+      # ====================== 第六阶段：集成内核模块到根文件系统（自动查找路径） ======================
       - name: Integrate kernel modules into RootFS
         run: |
           echo "=== 集成内核模块到根文件系统 ==="
@@ -353,18 +359,38 @@ jobs:
           sudo mkdir -p /mnt/rootfs
           sudo mount -o loop ${{ env.ROOTFS_IMG }} /mnt/rootfs
           
-          # 复制内核模块
-          if [ -d "${{ env.SDK_DIR }}/out/hi3798mv100/hi3798mdmo1g/kmod" ]; then
-            echo "复制内核模块..."
-            sudo cp -a ${{ env.SDK_DIR }}/out/hi3798mv100/hi3798mdmo1g/kmod/lib/modules/* /mnt/rootfs/lib/modules/
+          # 复制内核模块（优先使用我们手动安装的模块）
+          if [ -n "${{ env.MODULES_DIR }}" ] && [ -d "${{ env.MODULES_DIR }}" ]; then
+            echo "使用手动安装的内核模块: ${{ env.MODULES_DIR }}"
+            sudo cp -a ${{ env.MODULES_DIR }}/* /mnt/rootfs/lib/modules/
+          else
+            # 自动查找SDK输出目录中的模块
+            echo "自动查找内核模块目录..."
+            MODULES_PATHS=(
+              "${{ env.SDK_DIR }}/out/hi3798mv100/hi3798mdmo1g/kmod/lib/modules"
+              "${{ env.SDK_DIR }}/out/hi3798mv100/hi3798mdmo1g/kernel/modules"
+              "${{ env.SDK_DIR }}/out/hi3798mv100/hi3798mdmo1g/rootfs/lib/modules"
+              "${{ env.SDK_DIR }}/modules_install/lib/modules"
+            )
             
+            for PATH in "${MODULES_PATHS[@]}"; do
+              if [ -d "$PATH" ]; then
+                echo "找到内核模块目录: $PATH"
+                sudo cp -a "$PATH"/* /mnt/rootfs/lib/modules/
+                break
+              fi
+            done
+          fi
+          
+          # 检查模块是否复制成功
+          if [ -d "/mnt/rootfs/lib/modules" ] && [ "$(ls -A /mnt/rootfs/lib/modules)" ]; then
             # 生成模块依赖
-            KERNEL_VERSION=$(ls ${{ env.SDK_DIR }}/out/hi3798mv100/hi3798mdmo1g/kmod/lib/modules/)
+            KERNEL_VERSION=$(ls /mnt/rootfs/lib/modules/)
             echo "检测到内核版本: $KERNEL_VERSION"
             sudo depmod -a -b /mnt/rootfs "$KERNEL_VERSION"
             echo "✅ 内核模块集成完成"
           else
-            echo "⚠️ 未找到内核模块目录，跳过模块集成"
+            echo "⚠️ 未找到内核模块，跳过模块集成"
           fi
           
           # 添加首次启动修复脚本
