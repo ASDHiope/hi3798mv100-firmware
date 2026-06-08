@@ -39,7 +39,7 @@ jobs:
             ${{ env.SDK_DIR }}
             linux-${{ env.KERNEL_VERSION }}.tar.gz
             ~/.cache/apt
-          key: ${{ github.job }}-sdk-kernel-apt-v15-${{ hashFiles('.github/workflows/build-firmware.yml') }}
+          key: ${{ github.job }}-sdk-kernel-apt-v16-${{ hashFiles('.github/workflows/build-firmware.yml') }}
       
       # 安装编译依赖
       - name: Install all build dependencies
@@ -264,9 +264,9 @@ jobs:
             fi
           fi
 
-          $ECHO "=== 7. 调用SDK一键编译内核（+ 修复jobserver警告） ==="
-          # 前置 + 解决嵌套make jobserver不可用警告
-          +make linux -j$(nproc)
+          $ECHO "=== 7. 调用SDK一键编译内核 ==="
+          # 移除非法 + 号，直接正常调用 make
+          make linux -j$(nproc)
 
           $ECHO "=== 8. 拷贝最终内核镜像到工作区 ==="
           KERNEL_BIN="${SDK_FULL}/out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin"
