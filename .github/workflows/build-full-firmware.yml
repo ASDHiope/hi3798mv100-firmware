@@ -13,19 +13,15 @@ concurrency:
 
 jobs:
   build-firmware:
-    runs-on: ubuntu-22.04  # 4.4.y内核不支持gcc-13，用22.04最稳定
+    runs-on: ubuntu-22.04
     timeout-minutes: 240
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       NODE_OPTIONS: "--no-deprecation"
-      # SDK配置
       SDK_REPO: "https://gitee.com/lh736/HiSTBLinuxV100R005C00SPC060.git"
       SDK_DIR: "HiSTBLinuxV100R005C00SPC060"
-      # 内核配置
       KERNEL_VERSION: "4.4.35"
-      # 最终输出
       FIRMWARE_OUT: "firmware_output"
-      # RootFS配置
       ROOTFS_DIR: "ubuntu-noble-armhf-rootfs"
       ROOTFS_IMG: "backup-32.raw"
 
@@ -43,17 +39,15 @@ jobs:
             ${{ env.SDK_DIR }}
             linux-${{ env.KERNEL_VERSION }}.tar.gz
             ~/.cache/apt
-          key: ${{ github.job }}-sdk-kernel-apt-v10-${{ hashFiles('.github/workflows/build-firmware.yml') }}
+          key: ${{ github.job }}-sdk-kernel-apt-v13-${{ hashFiles('.github/workflows/build-firmware.yml') }}
       
-      # ====================== 第一阶段：安装所有依赖 ======================
+      # 安装编译依赖
       - name: Install all build dependencies
         run: |
-          # 替换为华为云Ubuntu源加速
           sudo sed -i 's/archive.ubuntu.com/mirrors.huaweicloud.com/g' /etc/apt/sources.list
           sudo sed -i 's/security.ubuntu.com/mirrors.huaweicloud.com/g' /etc/apt/sources.list
           sudo apt update
           
-          # 安装编译依赖（Ubuntu 22.04兼容的32位库）
           sudo apt install -y \
             build-essential make gettext bison flex bc zlib1g-dev libncurses5-dev \
             lzma u-boot-tools device-tree-compiler git cpio \
@@ -61,65 +55,44 @@ jobs:
             qemu-user-static debootstrap binfmt-support e2fsprogs \
             lib32z1 lib32stdc++6 lib32gcc-s1 libc6-i386 dosfstools kmod
           
-          # 修复缓存权限
           sudo rm -f /var/cache/apt/archives/lock
           sudo rm -rf /var/cache/apt/archives/partial
           sudo apt clean
 
-      # ====================== 第二阶段：自动构建Ubuntu 24.04根文件系统 ======================
-      - name: Build Ubuntu 24.04 Noble armhf RootFS (华为云源)
+      # 构建 Ubuntu 24.04 armhf 根文件系统
+      - name: Build Ubuntu 24.04 Noble armhf RootFS
         run: |
           echo "=== 开始构建Ubuntu 24.04根文件系统 ==="
-          
-          # 1. 下载基础系统（启用universe组件）
           sudo debootstrap --arch=armhf --foreign --components=main,restricted,universe,multiverse noble ./${{ env.ROOTFS_DIR }} http://mirrors.huaweicloud.com/ubuntu-ports/
           
-          # 2. 复制QEMU模拟器
           sudo cp /usr/bin/qemu-arm-static ./${{ env.ROOTFS_DIR }}/usr/bin/
-          
-          # 3. 完成第二阶段安装
-          echo "=> 执行debootstrap第二阶段..."
           sudo chroot ${ROOTFS_DIR} /debootstrap/debootstrap --second-stage
           
-          # 4. 挂载proc和sys
           sudo mount -t proc /proc ${ROOTFS_DIR}/proc
           sudo mount -t sysfs /sys ${ROOTFS_DIR}/sys
           
-          # 5. 配置完整APT源（包含所有组件）
-          echo "=> 配置完整APT源..."
-          cat << 'EOF' | sudo tee ${ROOTFS_DIR}/etc/apt/sources.list
+          sudo tee ${ROOTFS_DIR}/etc/apt/sources.list << 'EOF'
           deb https://mirrors.huaweicloud.com/ubuntu-ports/ noble main restricted universe multiverse
           deb https://mirrors.huaweicloud.com/ubuntu-ports/ noble-updates main restricted universe multiverse
           deb https://mirrors.huaweicloud.com/ubuntu-ports/ noble-security main restricted universe multiverse
           deb https://mirrors.huaweicloud.com/ubuntu-ports/ noble-backports main restricted universe multiverse
           EOF
           
-          # 6. 更新APT缓存
-          echo "=> 更新APT缓存..."
           sudo chroot ${ROOTFS_DIR} apt-get update -y
-          
-          # 7. 安装基础软件包
-          echo "=> 安装基础软件包..."
           sudo chroot ${ROOTFS_DIR} apt-get install -y --no-install-recommends --fix-missing \
             systemd openssh-server iproute2 net-tools iputils-ping \
             vim nano curl wget htop sudo lsb-release procps \
             ca-certificates gnupg lsb-release dnsutils lsof rsync \
             unzip zip xz-utils tree
           
-          # 8. 设置root密码
-          echo "=> 设置root密码..."
           sudo chroot ${ROOTFS_DIR} /bin/bash -c 'echo "root:123456" | chpasswd'
           
-          # 9. 配置SSH允许root登录
-          echo "=> 配置SSH..."
           sudo sed -i 's/^#PermitRootLogin prohibit-password/PermitRootLogin yes/' ${ROOTFS_DIR}/etc/ssh/sshd_config
           sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' ${ROOTFS_DIR}/etc/ssh/sshd_config
           sudo chroot ${ROOTFS_DIR} systemctl enable ssh
           
-          # 10. 配置网络
-          echo "=> 配置网络..."
           sudo mkdir -p ${ROOTFS_DIR}/etc/netplan/
-          cat << 'EOF' | sudo tee ${ROOTFS_DIR}/etc/netplan/01-netcfg.yaml
+          sudo tee ${ROOTFS_DIR}/etc/netplan/01-netcfg.yaml << 'EOF'
           network:
             version: 2
             renderer: networkd
@@ -131,8 +104,6 @@ jobs:
           sudo chroot ${ROOTFS_DIR} systemctl enable systemd-networkd
           sudo chroot ${ROOTFS_DIR} systemctl enable systemd-resolved
           
-          # 11. 设置时区
-          echo "=> 设置时区..."
           sudo chroot ${ROOTFS_DIR} /bin/bash -c '
             export TZ=Asia/Shanghai
             ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
@@ -140,17 +111,12 @@ jobs:
             dpkg-reconfigure -f noninteractive tzdata
           '
           
-          # 12. 配置主机名
-          echo "=> 配置主机名..."
           echo "hi3798mv100" | sudo tee ${ROOTFS_DIR}/etc/hostname
           echo "127.0.0.1   localhost hi3798mv100" | sudo tee ${ROOTFS_DIR}/etc/hosts
           
-          # 13. 配置DNS
           echo "nameserver 223.5.5.5" | sudo tee ${ROOTFS_DIR}/etc/resolv.conf
           echo "nameserver 119.29.29.29" | sudo tee -a ${ROOTFS_DIR}/etc/resolv.conf
           
-          # 14. 预配置Docker环境
-          echo "=> 预配置Docker环境..."
           sudo tee ${ROOTFS_DIR}/etc/sysctl.d/99-docker.conf << 'EOF'
           net.ipv4.ip_forward=1
           net.bridge.bridge-nf-call-iptables=1
@@ -184,19 +150,14 @@ jobs:
           echo "deb [arch=armhf signed-by=/etc/apt/keyrings/docker.asc] https://mirrors.aliyun.com/docker-ce/linux/ubuntu noble stable" | \
             sudo tee ${ROOTFS_DIR}/etc/apt/sources.list.d/docker.list > /dev/null
           
-          # 15. 清理缓存
-          echo "=> 清理系统缓存..."
           sudo chroot ${ROOTFS_DIR} apt-get clean
           sudo rm -rf ${ROOTFS_DIR}/var/lib/apt/lists/*
           sudo rm -rf ${ROOTFS_DIR}/tmp/* ${ROOTFS_DIR}/var/tmp/*
           sudo rm -rf ${ROOTFS_DIR}/usr/share/doc/* ${ROOTFS_DIR}/usr/share/man/*
           
-          # 16. 卸载挂载
           sudo umount ${ROOTFS_DIR}/proc
           sudo umount ${ROOTFS_DIR}/sys
           
-          # 17. 打包为EXT4镜像
-          echo "=> 打包为EXT4镜像..."
           SIZE=$(sudo du -sm ${ROOTFS_DIR} | cut -f1)
           IMAGE_SIZE=$((SIZE + 200))
           echo "根文件系统大小: ${SIZE}MB, 创建镜像大小: ${IMAGE_SIZE}MB"
@@ -215,16 +176,20 @@ jobs:
           echo "✅ Ubuntu 24.04根文件系统构建完成"
           echo "最终镜像大小: $(du -h ${{ env.ROOTFS_IMG }} | cut -f1)"
 
-      # ====================== 第三阶段：编译4.4.y内核（最终验证版） ======================
+      # 编译内核（严格遵循 Linux 4.x 官方编译规范）
       - name: Build 4.4.y kernel from HiSTB SDK
         if: github.event.inputs.kernel_artifact == ''
         run: |
-          # 保存所有系统命令的绝对路径（彻底不依赖PATH）
+          set -e
+          WORKSPACE=${{ github.workspace }}
+          SDK_FULL="${WORKSPACE}/${{ env.SDK_DIR }}"
+          SDK_KERNEL_FULL="${SDK_FULL}/source/kernel/linux-4.4.y"
+          COMPILE_OUT="${SDK_KERNEL_FULL}/build_out"
+
           LS=/bin/ls
           CP=/bin/cp
           ECHO=/bin/echo
           FIND=/usr/bin/find
-          PWD=/bin/pwd
           RM=/bin/rm
           TAR=/bin/tar
           WGET=/usr/bin/wget
@@ -233,138 +198,104 @@ jobs:
           SED=/bin/sed
           HEAD=/usr/bin/head
           WHICH=/usr/bin/which
-          
-          $ECHO "=== 开始编译4.4.y内核 ==="
-          
-          # 克隆SDK（如果没有缓存）
-          if [ ! -d "${{ env.SDK_DIR }}" ]; then
-            $ECHO "克隆SDK: ${{ env.SDK_REPO }}"
+
+          $ECHO "=== 1. 初始化目录 & 拉取SDK ==="
+          if [ ! -d "${SDK_FULL}" ]; then
             git clone --depth 1 ${{ env.SDK_REPO }} ${{ env.SDK_DIR }}
           else
-            $ECHO "✅ 使用缓存的SDK"
-            cd ${{ env.SDK_DIR }}
-            git pull || true
-            cd ..
+            cd "${SDK_FULL}" && git pull || true
           fi
-          
-          # 下载内核源码（多源重试+格式验证）
-          $ECHO "=== 下载内核源码 ==="
+          cd "${WORKSPACE}"
+
+          $ECHO "=== 2. 下载并解压标准 Linux 4.4 源码 ==="
           KERNEL_FILE="linux-${{ env.KERNEL_VERSION }}.tar.gz"
-          
-          # 清理可能损坏的缓存文件
-          if [ -f "$KERNEL_FILE" ]; then
-            if ! $FILE "$KERNEL_FILE" | $GREP -q "gzip compressed data"; then
-              $ECHO "⚠️ 缓存文件损坏，删除重新下载"
-              $RM -f "$KERNEL_FILE"
+          if [ -f "${KERNEL_FILE}" ]; then
+            if ! $FILE "${KERNEL_FILE}" | $GREP -q "gzip compressed data"; then
+              $RM -f "${KERNEL_FILE}"
             fi
           fi
-          
-          # 多个可靠的内核镜像源
           MIRRORS=(
             "https://mirrors.aliyun.com/linux-kernel/v4.x/linux-${{ env.KERNEL_VERSION }}.tar.gz"
             "https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-${{ env.KERNEL_VERSION }}.tar.gz"
             "https://mirrors.tuna.tsinghua.edu.cn/kernel/v4.x/linux-${{ env.KERNEL_VERSION }}.tar.gz"
           )
-          
           for MIRROR in "${MIRRORS[@]}"; do
-            if [ ! -f "$KERNEL_FILE" ]; then
-              $ECHO "尝试下载: $MIRROR"
-              $WGET -c --tries=3 --show-progress -O "$KERNEL_FILE" "$MIRROR"
-              
-              # 验证文件格式
-              if [ -f "$KERNEL_FILE" ] && $FILE "$KERNEL_FILE" | $GREP -q "gzip compressed data"; then
-                $ECHO "✅ 内核源码下载成功，文件格式验证通过"
-                break
-              else
-                $ECHO "❌ 下载失败或文件格式错误，删除重试"
-                $RM -f "$KERNEL_FILE"
-              fi
-            fi
+            [ -f "${KERNEL_FILE}" ] && break
+            $WGET -c --tries=3 -O "${KERNEL_FILE}" "${MIRROR}" || true
           done
-          
-          if [ ! -f "$KERNEL_FILE" ]; then
-            $ECHO "❌ 所有内核镜像源都失败了"
-            exit 1
+          [ ! -f "${KERNEL_FILE}" ] && $ECHO "内核源码下载失败" && exit 1
+
+          $TAR xzf "${KERNEL_FILE}"
+          $ECHO "内核源码解压完成"
+
+          $ECHO "=== 3. 执行 make mrproper 清理旧编译残留 ==="
+          cd "${SDK_KERNEL_FULL}"
+          make mrproper
+          $ECHO "mrproper 清理完成"
+
+          $ECHO "=== 4. 创建独立编译目录 + 内核配置 ==="
+          mkdir -p "${COMPILE_OUT}"
+          make O="${COMPILE_OUT}" defconfig
+          make O="${COMPILE_OUT}" olddefconfig
+          $ECHO "内核 .config 配置生成完成"
+
+          $ECHO "=== 5. 植入自定义设备树 DTS ==="
+          if [ -f "${WORKSPACE}/dts/hi3798mv100.dts" ]; then
+            $CP "${WORKSPACE}/dts/hi3798mv100.dts" "${SDK_KERNEL_FULL}/arch/arm/boot/dts/"
+            $ECHO "自定义DTS复制成功"
           fi
-          
-          # 解压并修复SDK内核脚本缺失
-          $ECHO "修复SDK内核脚本..."
-          $TAR xzf "$KERNEL_FILE"
-          SDK_KERNEL="${{ env.SDK_DIR }}/source/kernel/linux-4.4.y"
-          
-          [ ! -d "${SDK_KERNEL}/scripts/basic" ] && $CP -r "linux-${{ env.KERNEL_VERSION }}/scripts/basic/" "${SDK_KERNEL}/scripts/"
-          [ ! -d "${SDK_KERNEL}/scripts/kconfig" ] && $CP -r "linux-${{ env.KERNEL_VERSION }}/scripts/kconfig/" "${SDK_KERNEL}/scripts/"
-          
-          # 复制自定义设备树
-          if [ -f "./dts/hi3798mv100.dts" ]; then
-            $ECHO "复制自定义设备树"
-            $CP ./dts/hi3798mv100.dts "${SDK_KERNEL}/arch/arm/boot/dts/"
-          fi
-          
-          # 进入SDK目录
-          cd ${{ env.SDK_DIR }}
-          
-          # 复制配置文件
+
+          $ECHO "=== 6. 加载SDK环境 & 校验交叉编译器 ==="
+          cd "${SDK_FULL}"
           $CP configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
-          
-          # 正确处理PATH环境变量（最终解决方案）
-          # 1. 保存原始系统PATH
-          ORIGINAL_PATH=$PATH
-          
-          # 2. 加载SDK环境变量（这会设置CROSS_COMPILE和SDK工具链路径）
+          ORIGINAL_PATH="$PATH"
           source env.sh
-          
-          # 3. 提取SDK工具链路径（精确匹配）
-          SDK_TOOLCHAIN_PATH=$($ECHO $PATH | tr ':' '\n' | $GREP 'prebuilts/toolchains/arm-histbv310-linux/bin' | $HEAD -1)
-          
-          # 4. 恢复系统PATH，然后追加SDK工具链路径
-          export PATH=$ORIGINAL_PATH:$SDK_TOOLCHAIN_PATH
-          
-          # 5. 验证交叉编译器
-          $ECHO "验证交叉编译器..."
-          if $WHICH arm-histbv310-linux-gcc > /dev/null; then
-            $ECHO "✅ 海思交叉编译器可用: $($WHICH arm-histbv310-linux-gcc)"
-            arm-histbv310-linux-gcc --version
+          SDK_TOOL_BIN=$(echo "$PATH" | tr ':' '\n' | $GREP prebuilts/toolchains/arm-histbv310-linux/bin | $HEAD -1)
+          export PATH="${ORIGINAL_PATH}:${SDK_TOOL_BIN}"
+
+          if $WHICH arm-histbv310-linux-gcc; then
+            $ECHO "✅ 使用海思交叉编译器: $(arm-histbv310-linux-gcc --version)"
           else
-            $ECHO "⚠️ 海思交叉编译器未找到，使用标准arm-linux-gnueabihf-gcc"
-            # 安装标准arm编译器作为备用
+            $ECHO "⚠️ 海思编译器缺失，切换标准 arm-linux-gnueabihf-gcc"
             sudo apt update
             sudo apt install -y gcc-9-arm-linux-gnueabihf g++-9-arm-linux-gnueabihf
             sudo update-alternatives --install /usr/bin/arm-linux-gnueabihf-gcc arm-linux-gnueabihf-gcc /usr/bin/arm-linux-gnueabihf-gcc-9 90
             sudo update-alternatives --install /usr/bin/arm-linux-gnueabihf-g++ arm-linux-gnueabihf-g++ /usr/bin/arm-linux-gnueabihf-g++-9 90
-            # 修改内核Makefile使用标准编译器
-            $SED -i 's/CROSS_COMPILE ?= arm-histbv310-linux-/CROSS_COMPILE ?= arm-linux-gnueabihf-/g' ${SDK_KERNEL}/Makefile
-            $ECHO "✅ 已修改内核Makefile使用标准arm-linux-gnueabihf-gcc"
+            if [ -f "${SDK_KERNEL_FULL}/Makefile" ]; then
+              $SED -i 's/CROSS_COMPILE ?= arm-histbv310-linux-/CROSS_COMPILE ?= arm-linux-gnueabihf-/g' "${SDK_KERNEL_FULL}/Makefile"
+            fi
           fi
-          
-          $ECHO "开始编译内核..."
+
+          $ECHO "=== 7. 调用SDK一键编译内核 ==="
           make linux -j$(nproc)
-          
-          # 复制编译好的内核
-          if [ -f "out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin" ]; then
-            $CP out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin ../hi_kernel_new.bin
-            $ECHO "✅ 内核编译成功，大小: $(du -h ../hi_kernel_new.bin | cut -f1)"
+
+          $ECHO "=== 8. 标准模块安装 modules_install ==="
+          cd "${SDK_KERNEL_FULL}"
+          make O="${COMPILE_OUT}" modules_install
+          $ECHO "内核模块标准安装完成"
+
+          $ECHO "=== 9. 拷贝最终内核镜像到工作区 ==="
+          KERNEL_BIN="${SDK_FULL}/out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin"
+          if [ -f "${KERNEL_BIN}" ]; then
+            $CP "${KERNEL_BIN}" "${WORKSPACE}/hi_kernel_new.bin"
+            $ECHO "✅ 内核镜像拷贝成功: $(du -h "${WORKSPACE}/hi_kernel_new.bin" | cut -f1)"
           else
-            $ECHO "❌ 内核编译失败"
+            $ECHO "❌ 内核镜像未生成"
             exit 1
           fi
-          
-          # 自动查找内核模块目录
-          $ECHO "查找SDK生成的内核模块目录..."
-          MODULES_DIR=$($FIND out -type d -path "*lib/modules" | $HEAD -1)
-          
-          if [ -n "$MODULES_DIR" ] && [ -d "$MODULES_DIR" ]; then
-            $ECHO "✅ 找到内核模块目录: $($PWD)/$MODULES_DIR"
-            $ECHO "MODULES_DIR=$($PWD)/$MODULES_DIR" >> $GITHUB_ENV
+
+          $ECHO "=== 10. 提取模块目录 ==="
+          MODULES_DIR=$($FIND "${SDK_FULL}/out" -type d -path "*lib/modules" | $HEAD -1)
+          if [ -n "${MODULES_DIR}" ] && [ -d "${MODULES_DIR}" ]; then
+            echo "MODULES_DIR=${MODULES_DIR}" >> $GITHUB_ENV
+            $ECHO "✅ 模块目录: ${MODULES_DIR}"
           else
             $ECHO "⚠️ 未找到内核模块目录"
-            $FIND out -name "lib" -type d
           fi
-          
-          $ECHO "=== SDK输出目录结构 ==="
-          $LS -la out/hi3798mv100/hi3798mdmo1g/
 
-      # ====================== 第四阶段：下载预编译内核（可选） ======================
+          $LS -la "${SDK_FULL}/out/hi3798mv100/hi3798mdmo1g/"
+
+      # 下载预编译内核（可选）
       - name: Download prebuilt kernel artifact
         if: github.event.inputs.kernel_artifact != ''
         uses: actions/download-artifact@v6
@@ -372,41 +303,32 @@ jobs:
           name: ${{ github.event.inputs.kernel_artifact }}
           path: kernel-artifact/
 
-      # ====================== 第五阶段：生成多内存版本bootargs ======================
+      # 生成多版本 bootargs
       - name: Generate multi-version bootargs (1G/768M/512M)
         run: |
           echo "=== 生成所有内存版本的bootargs ==="
-          
-          # 1GB内存版本
           dd if=/dev/zero of=bootargs_1g.bin bs=1M count=1 2>/dev/null
           printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=1G mmz=ddr,0,0,60M vmalloc=500M systemd.unified_cgroup_hierarchy=1 blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_1g.bin bs=1 conv=notrunc 2>/dev/null
           echo "✅ bootargs_1g.bin 生成完成"
           
-          # 768MB内存版本
           dd if=/dev/zero of=bootargs_768m.bin bs=1M count=1 2>/dev/null
           printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=768M mmz=ddr,0,0,48M vmalloc=500M systemd.unified_cgroup_hierarchy=1 blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_768m.bin bs=1 conv=notrunc 2>/dev/null
           echo "✅ bootargs_768m.bin 生成完成"
           
-          # 512MB内存版本
           dd if=/dev/zero of=bootargs_512m.bin bs=1M count=1 2>/dev/null
           printf 'model=mv100 console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait rootflags=noload mem=512M mmz=ddr,0,0,32M vmalloc=500M systemd.unified_cgroup_hierarchy=1 blkdevparts=mmcblk0:1M(boot),1M(bootargs),4M(baseparam),4M(pqparam),4M(logo),20M(kernel),64M(busybox),512M(backup),-(ubuntu)' | dd of=bootargs_512m.bin bs=1 conv=notrunc 2>/dev/null
           echo "✅ bootargs_512m.bin 生成完成"
 
-      # ====================== 第六阶段：集成内核模块到根文件系统 ======================
+      # 内核模块集成进根文件系统
       - name: Integrate kernel modules into RootFS
         run: |
           echo "=== 集成内核模块到根文件系统 ==="
-          
-          # 挂载根文件系统
           sudo mkdir -p /mnt/rootfs
           sudo mount -o loop ${{ env.ROOTFS_IMG }} /mnt/rootfs
           
-          # 复制内核模块
           if [ -n "${{ env.MODULES_DIR }}" ] && [ -d "${{ env.MODULES_DIR }}" ]; then
             echo "使用SDK生成的内核模块: ${{ env.MODULES_DIR }}"
             sudo cp -a ${{ env.MODULES_DIR }}/* /mnt/rootfs/lib/modules/
-            
-            # 生成模块依赖
             KERNEL_VERSION=$(ls /mnt/rootfs/lib/modules/)
             echo "检测到内核版本: $KERNEL_VERSION"
             sudo depmod -a -b /mnt/rootfs "$KERNEL_VERSION"
@@ -415,8 +337,6 @@ jobs:
             echo "⚠️ 未找到内核模块目录，跳过模块集成"
           fi
           
-          # 添加首次启动修复脚本
-          echo "添加首次启动修复脚本..."
           sudo tee /mnt/rootfs/usr/local/bin/first_boot_fix.sh << 'EOF'
           #!/bin/sh
           swapoff -a; sed -i '/swap/d' /etc/fstab; rm -rf /swapfile
@@ -442,7 +362,6 @@ jobs:
           EOF
           sudo chmod +x /mnt/rootfs/usr/local/bin/first_boot_fix.sh
           
-          # 设置开机自启
           sudo tee /mnt/rootfs/etc/systemd/system/first-boot-fix.service << 'EOF'
           [Unit]
           Description=Hi3798MV100首次启动修复
@@ -458,16 +377,14 @@ jobs:
           sudo ln -sf /etc/systemd/system/first-boot-fix.service \
             /mnt/rootfs/etc/systemd/system/multi-user.target.wants/
           
-          # 卸载根文件系统
           sudo umount /mnt/rootfs
           echo "✅ 根文件系统集成完成"
 
-      # ====================== 第七阶段：打包最终固件 ======================
+      # 打包最终固件
       - name: Package final firmware
         run: |
           mkdir -p ${{ env.FIRMWARE_OUT }}
           
-          # 复制内核
           if [ -f hi_kernel_new.bin ]; then
             cp hi_kernel_new.bin ${{ env.FIRMWARE_OUT }}/
             echo "✅ 已包含编译好的内核"
@@ -479,13 +396,9 @@ jobs:
             exit 1
           fi
           
-          # 复制根文件系统
           cp ${{ env.ROOTFS_IMG }} ${{ env.FIRMWARE_OUT }}/
-          
-          # 复制所有版本的bootargs
           cp bootargs_*.bin ${{ env.FIRMWARE_OUT }}/
           
-          # 执行自定义打包脚本（如果有）
           if [ -f scripts/package_firmware.sh ]; then
             chmod +x scripts/package_firmware.sh
             bash scripts/package_firmware.sh ${{ env.FIRMWARE_OUT }}/
@@ -494,7 +407,7 @@ jobs:
           echo "=== 最终固件产物列表 ==="
           ls -lh ${{ env.FIRMWARE_OUT }}/
 
-      # ====================== 第八阶段：上传固件 ======================
+      # 上传固件制品
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v6
         with:
