@@ -44,7 +44,7 @@ jobs:
             ${{ env.SDK_DIR }}
             linux-${{ env.KERNEL_VERSION }}.tar.gz
             ~/.cache/apt
-          key: ${{ github.job }}-sdk-kernel-apt-${{ hashFiles('.github/workflows/build-firmware.yml') }}
+          key: ${{ github.job }}-sdk-kernel-apt-v2-${{ hashFiles('.github/workflows/build-firmware.yml') }}
       
       # ====================== 第一阶段：安装所有依赖 ======================
       - name: Install all build dependencies
@@ -81,8 +81,8 @@ jobs:
         run: |
           echo "=== 开始构建Ubuntu 24.04根文件系统 ==="
           
-          # 1. 下载基础系统
-          sudo debootstrap --arch=armhf --foreign noble ./${{ env.ROOTFS_DIR }} http://mirrors.huaweicloud.com/ubuntu-ports/
+          # 1. 下载基础系统（启用universe组件）
+          sudo debootstrap --arch=armhf --foreign --components=main,restricted,universe,multiverse noble ./${{ env.ROOTFS_DIR }} http://mirrors.huaweicloud.com/ubuntu-ports/
           
           # 2. 复制QEMU模拟器
           sudo cp /usr/bin/qemu-arm-static ./${{ env.ROOTFS_DIR }}/usr/bin/
@@ -95,34 +95,38 @@ jobs:
           sudo mount -t proc /proc ${ROOTFS_DIR}/proc
           sudo mount -t sysfs /sys ${ROOTFS_DIR}/sys
           
-          # 5. 安装基础软件包
-          echo "=> 安装基础软件包..."
-          sudo chroot ${ROOTFS_DIR} apt-get update
-          sudo chroot ${ROOTFS_DIR} apt-get install -y --no-install-recommends \
-            systemd openssh-server iproute2 net-tools iputils-ping \
-            vim nano curl wget htop sudo lsb-release procps \
-            ca-certificates gnupg lsb-release dnsutils lsof rsync \
-            tree unzip zip xz-utils
-          
-          # 6. 配置APT源（华为云）
-          echo "=> 配置APT源..."
+          # 5. 配置完整APT源（包含所有组件）
+          echo "=> 配置完整APT源..."
           cat << 'EOF' | sudo tee ${ROOTFS_DIR}/etc/apt/sources.list
           deb https://mirrors.huaweicloud.com/ubuntu-ports/ noble main restricted universe multiverse
           deb https://mirrors.huaweicloud.com/ubuntu-ports/ noble-updates main restricted universe multiverse
           deb https://mirrors.huaweicloud.com/ubuntu-ports/ noble-security main restricted universe multiverse
+          deb https://mirrors.huaweicloud.com/ubuntu-ports/ noble-backports main restricted universe multiverse
           EOF
           
-          # 7. 设置root密码
+          # 6. 更新APT缓存（关键修复）
+          echo "=> 更新APT缓存..."
+          sudo chroot ${ROOTFS_DIR} apt-get update -y
+          
+          # 7. 安装基础软件包（添加--fix-missing）
+          echo "=> 安装基础软件包..."
+          sudo chroot ${ROOTFS_DIR} apt-get install -y --no-install-recommends --fix-missing \
+            systemd openssh-server iproute2 net-tools iputils-ping \
+            vim nano curl wget htop sudo lsb-release procps \
+            ca-certificates gnupg lsb-release dnsutils lsof rsync \
+            unzip zip xz-utils tree
+          
+          # 8. 设置root密码
           echo "=> 设置root密码..."
           sudo chroot ${ROOTFS_DIR} /bin/bash -c 'echo "root:123456" | chpasswd'
           
-          # 8. 配置SSH允许root登录
+          # 9. 配置SSH允许root登录
           echo "=> 配置SSH..."
           sudo sed -i 's/^#PermitRootLogin prohibit-password/PermitRootLogin yes/' ${ROOTFS_DIR}/etc/ssh/sshd_config
           sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' ${ROOTFS_DIR}/etc/ssh/sshd_config
           sudo chroot ${ROOTFS_DIR} systemctl enable ssh
           
-          # 9. 配置网络（Netplan）
+          # 10. 配置网络（Netplan）
           echo "=> 配置网络..."
           sudo mkdir -p ${ROOTFS_DIR}/etc/netplan/
           cat << 'EOF' | sudo tee ${ROOTFS_DIR}/etc/netplan/01-netcfg.yaml
@@ -137,7 +141,7 @@ jobs:
           sudo chroot ${ROOTFS_DIR} systemctl enable systemd-networkd
           sudo chroot ${ROOTFS_DIR} systemctl enable systemd-resolved
           
-          # 10. 设置时区
+          # 11. 设置时区
           echo "=> 设置时区..."
           sudo chroot ${ROOTFS_DIR} /bin/bash -c '
             export TZ=Asia/Shanghai
@@ -146,16 +150,16 @@ jobs:
             dpkg-reconfigure -f noninteractive tzdata
           '
           
-          # 11. 配置主机名
+          # 12. 配置主机名
           echo "=> 配置主机名..."
           echo "hi3798mv100" | sudo tee ${ROOTFS_DIR}/etc/hostname
           echo "127.0.0.1   localhost hi3798mv100" | sudo tee ${ROOTFS_DIR}/etc/hosts
           
-          # 12. 配置DNS
+          # 13. 配置DNS
           echo "nameserver 223.5.5.5" | sudo tee ${ROOTFS_DIR}/etc/resolv.conf
           echo "nameserver 119.29.29.29" | sudo tee -a ${ROOTFS_DIR}/etc/resolv.conf
           
-          # 13. 预配置Docker环境
+          # 14. 预配置Docker环境
           echo "=> 预配置Docker环境..."
           # Docker必需的sysctl配置
           sudo tee ${ROOTFS_DIR}/etc/sysctl.d/99-docker.conf << 'EOF'
@@ -193,18 +197,18 @@ jobs:
           echo "deb [arch=armhf signed-by=/etc/apt/keyrings/docker.asc] https://mirrors.aliyun.com/docker-ce/linux/ubuntu noble stable" | \
             sudo tee ${ROOTFS_DIR}/etc/apt/sources.list.d/docker.list > /dev/null
           
-          # 14. 清理缓存减小体积
+          # 15. 清理缓存减小体积
           echo "=> 清理系统缓存..."
           sudo chroot ${ROOTFS_DIR} apt-get clean
           sudo rm -rf ${ROOTFS_DIR}/var/lib/apt/lists/*
           sudo rm -rf ${ROOTFS_DIR}/tmp/* ${ROOTFS_DIR}/var/tmp/*
           sudo rm -rf ${ROOTFS_DIR}/usr/share/doc/* ${ROOTFS_DIR}/usr/share/man/*
           
-          # 15. 卸载挂载
+          # 16. 卸载挂载
           sudo umount ${ROOTFS_DIR}/proc
           sudo umount ${ROOTFS_DIR}/sys
           
-          # 16. 打包为EXT4镜像
+          # 17. 打包为EXT4镜像
           echo "=> 打包为EXT4镜像..."
           SIZE=$(sudo du -sm ${ROOTFS_DIR} | cut -f1)
           IMAGE_SIZE=$((SIZE + 200))  # 预留200MB空间
