@@ -27,8 +27,8 @@ jobs:
       # 最终固件输出
       FIRMWARE_OUT: firmware_output
       # SDK配置（已修正为正确的海思SDK仓库）
-      SDK_REPO: "https://gitee.com/openhisilicon/HiSTBLinuxV100R005C00SPC060.git"
-      SDK_DIR: "HiSTBLinuxV100R005C00SPC060"
+      SDK_REPO: "https://github.com/ASDHiope/HiSTBLinuxKernel.git"
+      SDK_DIR: "HiSTBLinuxKernel"
 
     steps:
       - name: Checkout repository
