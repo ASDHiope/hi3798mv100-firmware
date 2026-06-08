@@ -39,7 +39,7 @@ jobs:
             ${{ env.SDK_DIR }}
             linux-${{ env.KERNEL_VERSION }}.tar.gz
             ~/.cache/apt
-          key: ${{ github.job }}-sdk-kernel-apt-v14-${{ hashFiles('.github/workflows/build-firmware.yml') }}
+          key: ${{ github.job }}-sdk-kernel-apt-v15-${{ hashFiles('.github/workflows/build-firmware.yml') }}
       
       # 安装编译依赖
       - name: Install all build dependencies
@@ -176,7 +176,7 @@ jobs:
           echo "✅ Ubuntu 24.04根文件系统构建完成"
           echo "最终镜像大小: $(du -h ${{ env.ROOTFS_IMG }} | cut -f1)"
 
-      # 编译内核（修复scripts缺失 + 移除O=外部编译目录，兼容SDK）
+      # 编译内核（修复scripts缺失 + 保留SDK原生板级配置）
       - name: Build 4.4.y kernel from HiSTB SDK
         if: github.event.inputs.kernel_artifact == ''
         run: |
@@ -206,7 +206,7 @@ jobs:
           fi
           cd "${WORKSPACE}"
 
-          $ECHO "=== 2. 下载并解压标准 Linux 4.4 源码 ==="
+          $ECHO "=== 2. 下载并解压标准 Linux 4.4 源码（仅用于补齐scripts） ==="
           KERNEL_FILE="linux-${{ env.KERNEL_VERSION }}.tar.gz"
           if [ -f "${KERNEL_FILE}" ]; then
             if ! $FILE "${KERNEL_FILE}" | $GREP -q "gzip compressed data"; then
@@ -227,28 +227,23 @@ jobs:
           $TAR xzf "${KERNEL_FILE}"
           $ECHO "内核源码解压完成"
 
-          # 核心修复：用完整官方源码覆盖SDK内核目录，彻底补齐所有scripts
-          $ECHO "=== 3. 覆盖SDK内核目录，补齐编译脚本 ==="
-          $RM -rf "${SDK_KERNEL_FULL}"
-          $CP -r "linux-${{ env.KERNEL_VERSION }}" "${SDK_KERNEL_FULL}"
+          # 核心修复：仅拷贝scripts目录，保留SDK所有板级配置/defconfig/dts
+          $ECHO "=== 3. 补齐编译scripts脚本（保留SDK原生配置） ==="
+          $RM -rf "${SDK_KERNEL_FULL}/scripts"
+          $CP -r "linux-${{ env.KERNEL_VERSION }}/scripts" "${SDK_KERNEL_FULL}/"
 
           $ECHO "=== 4. 【官方规范】make mrproper 清理旧编译残留 ==="
           cd "${SDK_KERNEL_FULL}"
           make mrproper
           $ECHO "mrproper 清理完成"
 
-          $ECHO "=== 5. 【官方规范】内核配置 ==="
-          make defconfig
-          make olddefconfig
-          $ECHO "内核 .config 配置生成完成"
-
-          $ECHO "=== 6. 植入自定义设备树 DTS ==="
+          $ECHO "=== 5. 植入自定义设备树 DTS ==="
           if [ -f "${WORKSPACE}/dts/hi3798mv100.dts" ]; then
             $CP "${WORKSPACE}/dts/hi3798mv100.dts" "${SDK_KERNEL_FULL}/arch/arm/boot/dts/"
             $ECHO "自定义DTS复制成功"
           fi
 
-          $ECHO "=== 7. 加载SDK环境 & 校验交叉编译器 ==="
+          $ECHO "=== 6. 加载SDK环境 & 校验交叉编译器 ==="
           cd "${SDK_FULL}"
           $CP configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
           ORIGINAL_PATH="$PATH"
@@ -269,15 +264,11 @@ jobs:
             fi
           fi
 
-          $ECHO "=== 8. 调用SDK一键编译内核 ==="
-          make linux -j$(nproc)
+          $ECHO "=== 7. 调用SDK一键编译内核（+ 修复jobserver警告） ==="
+          # 前置 + 解决嵌套make jobserver不可用警告
+          +make linux -j$(nproc)
 
-          $ECHO "=== 9. 【官方规范】标准模块安装 modules_install ==="
-          cd "${SDK_KERNEL_FULL}"
-          make modules_install
-          $ECHO "内核模块标准安装完成"
-
-          $ECHO "=== 10. 拷贝最终内核镜像到工作区 ==="
+          $ECHO "=== 8. 拷贝最终内核镜像到工作区 ==="
           KERNEL_BIN="${SDK_FULL}/out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin"
           if [ -f "${KERNEL_BIN}" ]; then
             $CP "${KERNEL_BIN}" "${WORKSPACE}/hi_kernel_new.bin"
@@ -287,7 +278,7 @@ jobs:
             exit 1
           fi
 
-          $ECHO "=== 11. 提取模块目录 ==="
+          $ECHO "=== 9. 提取模块目录 ==="
           MODULES_DIR=$($FIND "${SDK_FULL}/out" -type d -path "*lib/modules" | $HEAD -1)
           if [ -n "${MODULES_DIR}" ] && [ -d "${MODULES_DIR}" ]; then
             echo "MODULES_DIR=${MODULES_DIR}" >> $GITHUB_ENV
