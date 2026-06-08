@@ -32,14 +32,13 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Cache SDK, kernel source and apt packages
+      - name: Cache SDK and apt packages
         uses: actions/cache@v5
         with:
           path: |
             ${{ env.SDK_DIR }}
-            linux-${{ env.KERNEL_VERSION }}.tar.gz
             ~/.cache/apt
-          key: ${{ github.job }}-sdk-kernel-apt-v16-${{ hashFiles('.github/workflows/build-firmware.yml') }}
+          key: ${{ github.job }}-sdk-apt-v17-${{ hashFiles('.github/workflows/build-firmware.yml') }}
       
       # 安装编译依赖
       - name: Install all build dependencies
@@ -176,29 +175,22 @@ jobs:
           echo "✅ Ubuntu 24.04根文件系统构建完成"
           echo "最终镜像大小: $(du -h ${{ env.ROOTFS_IMG }} | cut -f1)"
 
-      # 编译内核（修复scripts缺失 + 保留SDK原生板级配置）
-      - name: Build 4.4.y kernel from HiSTB SDK
+      # 纯原生HiSTBLinuxKernel仓库编译 4.4.y 内核（无外部源码、纯SDK原生流程）
+      - name: Build 4.4.y kernel by native HiSTBLinux SDK
         if: github.event.inputs.kernel_artifact == ''
         run: |
           set -e
           WORKSPACE=${{ github.workspace }}
           SDK_FULL="${WORKSPACE}/${{ env.SDK_DIR }}"
-          SDK_KERNEL_FULL="${SDK_FULL}/source/kernel/linux-4.4.y"
 
           LS=/bin/ls
           CP=/bin/cp
           ECHO=/bin/echo
           FIND=/usr/bin/find
           RM=/bin/rm
-          TAR=/bin/tar
-          WGET=/usr/bin/wget
-          FILE=/usr/bin/file
-          GREP=/bin/grep
-          SED=/bin/sed
-          HEAD=/usr/bin/head
           WHICH=/usr/bin/which
 
-          $ECHO "=== 1. 初始化目录 & 拉取SDK ==="
+          $ECHO "=== 1. 拉取/更新原生SDK仓库 ==="
           if [ ! -d "${SDK_FULL}" ]; then
             git clone --depth 1 ${{ env.SDK_REPO }} ${{ env.SDK_DIR }}
           else
@@ -206,88 +198,50 @@ jobs:
           fi
           cd "${WORKSPACE}"
 
-          $ECHO "=== 2. 下载并解压标准 Linux 4.4 源码（仅用于补齐scripts） ==="
-          KERNEL_FILE="linux-${{ env.KERNEL_VERSION }}.tar.gz"
-          if [ -f "${KERNEL_FILE}" ]; then
-            if ! $FILE "${KERNEL_FILE}" | $GREP -q "gzip compressed data"; then
-              $RM -f "${KERNEL_FILE}"
-            fi
+          $ECHO "=== 2. 进入SDK目录，加载环境变量并导出全局工具链路径 ==="
+          cd "${SDK_FULL}"
+          # 加载SDK环境脚本
+          source env.sh
+          # 提取交叉编译器路径，全局写入PATH，解决子make找不到编译器
+          TOOLCHAIN_BIN=$(echo "$PATH" | tr ':' '\n' | grep prebuilts/toolchains/arm-histbv310-linux/bin | head -1)
+          export PATH="${TOOLCHAIN_BIN}:$PATH"
+          export CROSS_COMPILE=arm-histbv310-linux-
+
+          $ECHO "=== 3. 校验交叉编译器 ==="
+          if which arm-histbv310-linux-gcc; then
+            $ECHO "✅ 交叉编译器就绪: $(arm-histbv310-linux-gcc --version)"
+          else
+            $ECHO "❌ 未找到海思交叉编译器，请检查SDK工具链完整性"
+            exit 1
           fi
-          MIRRORS=(
-            "https://mirrors.aliyun.com/linux-kernel/v4.x/linux-${{ env.KERNEL_VERSION }}.tar.gz"
-            "https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-${{ env.KERNEL_VERSION }}.tar.gz"
-            "https://mirrors.tuna.tsinghua.edu.cn/kernel/v4.x/linux-${{ env.KERNEL_VERSION }}.tar.gz"
-          )
-          for MIRROR in "${MIRRORS[@]}"; do
-            [ -f "${KERNEL_FILE}" ] && break
-            $WGET -c --tries=3 -O "${KERNEL_FILE}" "${MIRROR}" || true
-          done
-          [ ! -f "${KERNEL_FILE}" ] && $ECHO "内核源码下载失败" && exit 1
 
-          $TAR xzf "${KERNEL_FILE}"
-          $ECHO "内核源码解压完成"
-
-          # 核心修复：仅拷贝scripts目录，保留SDK所有板级配置/defconfig/dts
-          $ECHO "=== 3. 补齐编译scripts脚本（保留SDK原生配置） ==="
-          $RM -rf "${SDK_KERNEL_FULL}/scripts"
-          $CP -r "linux-${{ env.KERNEL_VERSION }}/scripts" "${SDK_KERNEL_FULL}/"
-
-          $ECHO "=== 4. 【官方规范】make mrproper 清理旧编译残留 ==="
-          cd "${SDK_KERNEL_FULL}"
+          $ECHO "=== 4. 【Linux官方规范】make mrproper 清理编译残留 ==="
           make mrproper
           $ECHO "mrproper 清理完成"
 
-          $ECHO "=== 5. 植入自定义设备树 DTS ==="
-          if [ -f "${WORKSPACE}/dts/hi3798mv100.dts" ]; then
-            $CP "${WORKSPACE}/dts/hi3798mv100.dts" "${SDK_KERNEL_FULL}/arch/arm/boot/dts/"
-            $ECHO "自定义DTS复制成功"
-          fi
-
-          $ECHO "=== 6. 加载SDK环境 & 校验交叉编译器 ==="
-          cd "${SDK_FULL}"
-          $CP configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
-          ORIGINAL_PATH="$PATH"
-          source env.sh
-          SDK_TOOL_BIN=$(echo "$PATH" | tr ':' '\n' | $GREP prebuilts/toolchains/arm-histbv310-linux/bin | $HEAD -1)
-          export PATH="${ORIGINAL_PATH}:${SDK_TOOL_BIN}"
-
-          if $WHICH arm-histbv310-linux-gcc; then
-            $ECHO "✅ 使用海思交叉编译器: $(arm-histbv310-linux-gcc --version)"
-          else
-            $ECHO "⚠️ 海思编译器缺失，切换标准 arm-linux-gnueabihf-gcc"
-            sudo apt update
-            sudo apt install -y gcc-9-arm-linux-gnueabihf g++-9-arm-linux-gnueabihf
-            sudo update-alternatives --install /usr/bin/arm-linux-gnueabihf-gcc arm-linux-gnueabihf-gcc /usr/bin/arm-linux-gnueabihf-gcc-9 90
-            sudo update-alternatives --install /usr/bin/arm-linux-gnueabihf-g++ arm-linux-gnueabihf-g++ /usr/bin/arm-linux-gnueabihf-g++-9 90
-            if [ -f "${SDK_KERNEL_FULL}/Makefile" ]; then
-              $SED -i 's/CROSS_COMPILE ?= arm-histbv310-linux-/CROSS_COMPILE ?= arm-linux-gnueabihf-/g' "${SDK_KERNEL_FULL}/Makefile"
-            fi
-          fi
-
-          $ECHO "=== 7. 调用SDK一键编译内核 ==="
-          # 移除非法 + 号，直接正常调用 make
+          $ECHO "=== 5. 启动SDK原生编译 make linux -j$(nproc) ==="
           make linux -j$(nproc)
 
-          $ECHO "=== 8. 拷贝最终内核镜像到工作区 ==="
-          KERNEL_BIN="${SDK_FULL}/out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin"
+          $ECHO "=== 6. 拷贝内核镜像到工作目录 ==="
+          KERNEL_BIN="out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin"
           if [ -f "${KERNEL_BIN}" ]; then
             $CP "${KERNEL_BIN}" "${WORKSPACE}/hi_kernel_new.bin"
             $ECHO "✅ 内核镜像拷贝成功: $(du -h "${WORKSPACE}/hi_kernel_new.bin" | cut -f1)"
           else
-            $ECHO "❌ 内核镜像未生成"
+            $ECHO "❌ 内核镜像生成失败"
             exit 1
           fi
 
-          $ECHO "=== 9. 提取模块目录 ==="
-          MODULES_DIR=$($FIND "${SDK_FULL}/out" -type d -path "*lib/modules" | $HEAD -1)
+          $ECHO "=== 7. 检索内核模块目录 ==="
+          MODULES_DIR=$(find out -type d -path "*lib/modules" | head -1)
           if [ -n "${MODULES_DIR}" ] && [ -d "${MODULES_DIR}" ]; then
-            echo "MODULES_DIR=${MODULES_DIR}" >> $GITHUB_ENV
-            $ECHO "✅ 模块目录: ${MODULES_DIR}"
+            echo "MODULES_DIR=${SDK_FULL}/${MODULES_DIR}" >> $GITHUB_ENV
+            $ECHO "✅ 内核模块目录: ${SDK_FULL}/${MODULES_DIR}"
           else
-            $ECHO "⚠️ 未找到内核模块目录"
+            $ECHO "⚠️ 未检索到内核模块目录"
           fi
 
-          $LS -la "${SDK_FULL}/out/hi3798mv100/hi3798mdmo1g/"
+          $LS -la out/hi3798mv100/hi3798mdmo1g/
 
       # 下载预编译内核（可选）
       - name: Download prebuilt kernel artifact
