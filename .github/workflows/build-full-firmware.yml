@@ -26,31 +26,24 @@ jobs:
       ROOTFS_IMG: hi3798mv100_rootfs_jammy.img
       # 最终固件输出
       FIRMWARE_OUT: firmware_output
+      # SDK配置
+      SDK_REPO: "https://github.com/ASDHiope/HiSTBLinuxKernel.git"
+      SDK_DIR: "HiSTBLinuxV100R005C00SPC060"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           persist-credentials: false
-          submodules: true  # 自动拉取你的HiSTBLinuxKernel子模块
+          fetch-depth: 0
 
-      - name: 强制初始化并更新子模块
-        run: |
-          echo "=== 开始拉取SDK子模块 ==="
-          git submodule sync --recursive
-          git submodule update --init --force --recursive
-          echo "=== 拉取完成，当前根目录结构 ==="
-          ls -la
-          echo "=== 子模块状态 ==="
-          git submodule status
-
-      - name: Cache toolchain, kernel source and rootfs packages
+      - name: Cache toolchain, kernel source and SDK
         uses: actions/cache@v5
         with:
           path: |
             ${{ env.SRC_DIR }}
             ~/.cache/apt
-            HiSTBLinuxV100R005C00SPC060  # 缓存SDK加速编译
+            ${{ env.SDK_DIR }}
           key: ${{ github.job }}-full-${{ hashFiles('.github/workflows/build-full-firmware.yml') }}-${{ hashFiles('dts/hi3798mv100.dts') }}
       
       # ====================== 第一阶段：安装所有依赖 ======================
@@ -72,6 +65,30 @@ jobs:
           sudo rm -f /var/cache/apt/archives/lock
           sudo rm -rf /var/cache/apt/archives/partial
           sudo apt clean
+
+      # ====================== 【关键修改】直接克隆SDK仓库 ======================
+      - name: Clone HiSTB SDK (直接克隆，绕过子模块问题)
+        run: |
+          echo "=== 开始克隆HiSTB SDK ==="
+          if [ ! -d "${{ env.SDK_DIR }}" ]; then
+            git clone --depth 1 ${{ env.SDK_REPO }} ${{ env.SDK_DIR }}
+            echo "✅ SDK克隆成功"
+          else
+            echo "✅ 使用缓存的SDK"
+            cd ${{ env.SDK_DIR }}
+            git pull || true
+          fi
+          
+          # 验证SDK目录结构
+          echo "=== SDK目录结构 ==="
+          ls -la ${{ env.SDK_DIR }}
+          if [ -f "${{ env.SDK_DIR }}/source/boot/Makefile" ]; then
+            echo "✅ SDK验证通过，Fastboot编译所需文件存在"
+          else
+            echo "❌ SDK验证失败，缺少source/boot/Makefile"
+            exit 1
+          fi
+
       # ====================== 第二阶段：构建5.4 Docker专用内核 ======================
       - name: Download Linux 5.4 (华为云+阿里云双国内源+格式校验)
         run: |
@@ -493,9 +510,9 @@ jobs:
       - name: Compile Fastboot from HiSTB SDK
         run: |
           echo "=== 开始编译Fastboot ==="
-          if [ -d ./HiSTBLinuxV100R005C00SPC060/source/boot ];then
+          if [ -d ./${{ env.SDK_DIR }}/source/boot ];then
             echo "✅ 检测到HiSTB SDK，开始编译Fastboot"
-            cd ./HiSTBLinuxV100R005C00SPC060/source/boot
+            cd ./${{ env.SDK_DIR }}/source/boot
             
             # 清理之前的编译产物
             make clean || true
@@ -508,9 +525,13 @@ jobs:
               cp fastboot.bin ../../../
             else
               echo "⚠️ Fastboot编译失败，将不包含fastboot.bin"
+              echo "=== 编译错误日志 ==="
+              make V=1 CROSS_COMPILE=${{ env.CROSS_COMPILE }}
             fi
           else
             echo "⚠️ 未检测到HiSTB SDK，跳过Fastboot编译"
+            echo "当前目录结构:"
+            ls -la
           fi
       - name: Package final firmware
         run: |
