@@ -23,12 +23,11 @@ jobs:
       SDK_DIR: "HiSTBLinuxV100R005C00SPC060"
       # 内核配置
       KERNEL_VERSION: "4.4.35"
-      KERNEL_MIRROR: "https://mirrors.huaweicloud.com/linux/kernel/v4.x"
+      # 最终输出
+      FIRMWARE_OUT: "firmware_output"
       # RootFS配置
       ROOTFS_DIR: "ubuntu-noble-armhf-rootfs"
       ROOTFS_IMG: "backup-32.raw"
-      # 最终输出
-      FIRMWARE_OUT: "firmware_output"
 
     steps:
       - name: Checkout repository
@@ -44,7 +43,7 @@ jobs:
             ${{ env.SDK_DIR }}
             linux-${{ env.KERNEL_VERSION }}.tar.gz
             ~/.cache/apt
-          key: ${{ github.job }}-sdk-kernel-apt-v2-${{ hashFiles('.github/workflows/build-firmware.yml') }}
+          key: ${{ github.job }}-sdk-kernel-apt-v3-${{ hashFiles('.github/workflows/build-firmware.yml') }}
       
       # ====================== 第一阶段：安装所有依赖 ======================
       - name: Install all build dependencies
@@ -229,7 +228,7 @@ jobs:
           echo "✅ Ubuntu 24.04根文件系统构建完成"
           echo "最终镜像大小: $(du -h ${{ env.ROOTFS_IMG }} | cut -f1)"
 
-      # ====================== 第三阶段：编译4.4.y内核 ======================
+      # ====================== 第三阶段：编译4.4.y内核（多源重试+格式验证） ======================
       - name: Build 4.4.y kernel from HiSTB SDK
         if: github.event.inputs.kernel_artifact == ''
         run: |
@@ -246,17 +245,49 @@ jobs:
             cd ..
           fi
           
-          # 下载内核源码（如果没有缓存）
-          if [ ! -f "linux-${{ env.KERNEL_VERSION }}.tar.gz" ]; then
-            echo "下载内核源码: ${{ env.KERNEL_MIRROR }}/linux-${{ env.KERNEL_VERSION }}.tar.gz"
-            wget -q "${{ env.KERNEL_MIRROR }}/linux-${{ env.KERNEL_VERSION }}.tar.gz"
-          else
-            echo "✅ 使用缓存的内核源码"
+          # 下载内核源码（多源重试+格式验证）
+          echo "=== 下载内核源码 ==="
+          KERNEL_FILE="linux-${{ env.KERNEL_VERSION }}.tar.gz"
+          
+          # 清理可能损坏的缓存文件
+          if [ -f "$KERNEL_FILE" ]; then
+            if ! file "$KERNEL_FILE" | grep -q "gzip compressed data"; then
+              echo "⚠️ 缓存文件损坏，删除重新下载"
+              rm -f "$KERNEL_FILE"
+            fi
           fi
           
-          # 修复SDK内核脚本缺失
+          # 多个可靠的内核镜像源
+          MIRRORS=(
+            "https://mirrors.aliyun.com/linux-kernel/v4.x/linux-${{ env.KERNEL_VERSION }}.tar.gz"
+            "https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-${{ env.KERNEL_VERSION }}.tar.gz"
+            "https://mirrors.tuna.tsinghua.edu.cn/kernel/v4.x/linux-${{ env.KERNEL_VERSION }}.tar.gz"
+          )
+          
+          for MIRROR in "${MIRRORS[@]}"; do
+            if [ ! -f "$KERNEL_FILE" ]; then
+              echo "尝试下载: $MIRROR"
+              wget -c --tries=3 --show-progress -O "$KERNEL_FILE" "$MIRROR"
+              
+              # 验证文件格式
+              if [ -f "$KERNEL_FILE" ] && file "$KERNEL_FILE" | grep -q "gzip compressed data"; then
+                echo "✅ 内核源码下载成功，文件格式验证通过"
+                break
+              else
+                echo "❌ 下载失败或文件格式错误，删除重试"
+                rm -f "$KERNEL_FILE"
+              fi
+            fi
+          done
+          
+          if [ ! -f "$KERNEL_FILE" ]; then
+            echo "❌ 所有内核镜像源都失败了"
+            exit 1
+          fi
+          
+          # 解压并修复SDK内核脚本缺失
           echo "修复SDK内核脚本..."
-          tar xzf "linux-${{ env.KERNEL_VERSION }}.tar.gz"
+          tar xzf "$KERNEL_FILE"
           SDK_KERNEL="${{ env.SDK_DIR }}/source/kernel/linux-4.4.y"
           
           [ ! -d "${SDK_KERNEL}/scripts/basic" ] && cp -r "linux-${{ env.KERNEL_VERSION }}/scripts/basic/" "${SDK_KERNEL}/scripts/"
