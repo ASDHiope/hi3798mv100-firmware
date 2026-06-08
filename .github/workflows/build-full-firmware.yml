@@ -43,7 +43,7 @@ jobs:
             ${{ env.SDK_DIR }}
             linux-${{ env.KERNEL_VERSION }}.tar.gz
             ~/.cache/apt
-          key: ${{ github.job }}-sdk-kernel-apt-v5-${{ hashFiles('.github/workflows/build-firmware.yml') }}
+          key: ${{ github.job }}-sdk-kernel-apt-v6-${{ hashFiles('.github/workflows/build-firmware.yml') }}
       
       # ====================== 第一阶段：安装所有依赖 ======================
       - name: Install all build dependencies
@@ -228,7 +228,7 @@ jobs:
           echo "✅ Ubuntu 24.04根文件系统构建完成"
           echo "最终镜像大小: $(du -h ${{ env.ROOTFS_IMG }} | cut -f1)"
 
-      # ====================== 第三阶段：编译4.4.y内核（使用SDK原生编译系统） ======================
+      # ====================== 第三阶段：编译4.4.y内核（修复PATH环境变量） ======================
       - name: Build 4.4.y kernel from HiSTB SDK
         if: github.event.inputs.kernel_artifact == ''
         run: |
@@ -299,10 +299,18 @@ jobs:
             cp ./dts/hi3798mv100.dts "${SDK_KERNEL}/arch/arm/boot/dts/"
           fi
           
-          # 配置并编译内核（SDK原生命令，已包含模块编译）
+          # 配置并编译内核（修复PATH环境变量）
           cd ${{ env.SDK_DIR }}
           cp configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
+          
+          # 保存原始PATH
+          ORIGINAL_PATH=$PATH
+          
+          # 加载SDK环境变量
           source env.sh
+          
+          # 关键修复：恢复系统PATH（SDK会覆盖PATH导致ls等命令找不到）
+          export PATH=$ORIGINAL_PATH:$PATH
           
           echo "开始编译内核（SDK自动包含模块编译）..."
           make linux -j$(nproc)
