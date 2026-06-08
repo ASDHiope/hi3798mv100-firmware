@@ -43,7 +43,7 @@ jobs:
             ${{ env.SDK_DIR }}
             linux-${{ env.KERNEL_VERSION }}.tar.gz
             ~/.cache/apt
-          key: ${{ github.job }}-sdk-kernel-apt-v6-${{ hashFiles('.github/workflows/build-firmware.yml') }}
+          key: ${{ github.job }}-sdk-kernel-apt-v7-${{ hashFiles('.github/workflows/build-firmware.yml') }}
       
       # ====================== 第一阶段：安装所有依赖 ======================
       - name: Install all build dependencies
@@ -228,32 +228,44 @@ jobs:
           echo "✅ Ubuntu 24.04根文件系统构建完成"
           echo "最终镜像大小: $(du -h ${{ env.ROOTFS_IMG }} | cut -f1)"
 
-      # ====================== 第三阶段：编译4.4.y内核（修复PATH环境变量） ======================
+      # ====================== 第三阶段：编译4.4.y内核（绝对路径终极修复） ======================
       - name: Build 4.4.y kernel from HiSTB SDK
         if: github.event.inputs.kernel_artifact == ''
         run: |
-          echo "=== 开始编译4.4.y内核 ==="
+          # 保存所有系统命令的绝对路径（彻底不依赖PATH）
+          LS=/bin/ls
+          CP=/bin/cp
+          ECHO=/bin/echo
+          FIND=/usr/bin/find
+          PWD=/bin/pwd
+          RM=/bin/rm
+          MKDIR=/bin/mkdir
+          TAR=/bin/tar
+          WGET=/usr/bin/wget
+          FILE=/usr/bin/file
+          
+          $ECHO "=== 开始编译4.4.y内核 ==="
           
           # 克隆SDK（如果没有缓存）
           if [ ! -d "${{ env.SDK_DIR }}" ]; then
-            echo "克隆SDK: ${{ env.SDK_REPO }}"
+            $ECHO "克隆SDK: ${{ env.SDK_REPO }}"
             git clone --depth 1 ${{ env.SDK_REPO }} ${{ env.SDK_DIR }}
           else
-            echo "✅ 使用缓存的SDK"
+            $ECHO "✅ 使用缓存的SDK"
             cd ${{ env.SDK_DIR }}
             git pull || true
             cd ..
           fi
           
           # 下载内核源码（多源重试+格式验证）
-          echo "=== 下载内核源码 ==="
+          $ECHO "=== 下载内核源码 ==="
           KERNEL_FILE="linux-${{ env.KERNEL_VERSION }}.tar.gz"
           
           # 清理可能损坏的缓存文件
           if [ -f "$KERNEL_FILE" ]; then
-            if ! file "$KERNEL_FILE" | grep -q "gzip compressed data"; then
-              echo "⚠️ 缓存文件损坏，删除重新下载"
-              rm -f "$KERNEL_FILE"
+            if ! $FILE "$KERNEL_FILE" | $ECHO grep -q "gzip compressed data"; then
+              $ECHO "⚠️ 缓存文件损坏，删除重新下载"
+              $RM -f "$KERNEL_FILE"
             fi
           fi
           
@@ -266,84 +278,80 @@ jobs:
           
           for MIRROR in "${MIRRORS[@]}"; do
             if [ ! -f "$KERNEL_FILE" ]; then
-              echo "尝试下载: $MIRROR"
-              wget -c --tries=3 --show-progress -O "$KERNEL_FILE" "$MIRROR"
+              $ECHO "尝试下载: $MIRROR"
+              $WGET -c --tries=3 --show-progress -O "$KERNEL_FILE" "$MIRROR"
               
               # 验证文件格式
-              if [ -f "$KERNEL_FILE" ] && file "$KERNEL_FILE" | grep -q "gzip compressed data"; then
-                echo "✅ 内核源码下载成功，文件格式验证通过"
+              if [ -f "$KERNEL_FILE" ] && $FILE "$KERNEL_FILE" | $ECHO grep -q "gzip compressed data"; then
+                $ECHO "✅ 内核源码下载成功，文件格式验证通过"
                 break
               else
-                echo "❌ 下载失败或文件格式错误，删除重试"
-                rm -f "$KERNEL_FILE"
+                $ECHO "❌ 下载失败或文件格式错误，删除重试"
+                $RM -f "$KERNEL_FILE"
               fi
             fi
           done
           
           if [ ! -f "$KERNEL_FILE" ]; then
-            echo "❌ 所有内核镜像源都失败了"
+            $ECHO "❌ 所有内核镜像源都失败了"
             exit 1
           fi
           
           # 解压并修复SDK内核脚本缺失
-          echo "修复SDK内核脚本..."
-          tar xzf "$KERNEL_FILE"
+          $ECHO "修复SDK内核脚本..."
+          $TAR xzf "$KERNEL_FILE"
           SDK_KERNEL="${{ env.SDK_DIR }}/source/kernel/linux-4.4.y"
           
-          [ ! -d "${SDK_KERNEL}/scripts/basic" ] && cp -r "linux-${{ env.KERNEL_VERSION }}/scripts/basic/" "${SDK_KERNEL}/scripts/"
-          [ ! -d "${SDK_KERNEL}/scripts/kconfig" ] && cp -r "linux-${{ env.KERNEL_VERSION }}/scripts/kconfig/" "${SDK_KERNEL}/scripts/"
+          [ ! -d "${SDK_KERNEL}/scripts/basic" ] && $CP -r "linux-${{ env.KERNEL_VERSION }}/scripts/basic/" "${SDK_KERNEL}/scripts/"
+          [ ! -d "${SDK_KERNEL}/scripts/kconfig" ] && $CP -r "linux-${{ env.KERNEL_VERSION }}/scripts/kconfig/" "${SDK_KERNEL}/scripts/"
           
           # 复制自定义设备树
           if [ -f "./dts/hi3798mv100.dts" ]; then
-            echo "复制自定义设备树"
-            cp ./dts/hi3798mv100.dts "${SDK_KERNEL}/arch/arm/boot/dts/"
+            $ECHO "复制自定义设备树"
+            $CP ./dts/hi3798mv100.dts "${SDK_KERNEL}/arch/arm/boot/dts/"
           fi
           
-          # 配置并编译内核（修复PATH环境变量）
+          # 进入SDK目录
           cd ${{ env.SDK_DIR }}
-          cp configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
           
-          # 保存原始PATH
-          ORIGINAL_PATH=$PATH
+          # 复制配置文件
+          $CP configs/hi3798mv100/hi3798mdmo1g_hi3798mv100_cfg.mak cfg.mak
           
-          # 加载SDK环境变量
+          # 加载SDK环境变量（这会破坏PATH，但我们后面用绝对路径）
           source env.sh
           
-          # 关键修复：恢复系统PATH（SDK会覆盖PATH导致ls等命令找不到）
-          export PATH=$ORIGINAL_PATH:$PATH
+          # 强制恢复系统PATH（双重保险）
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           
-          echo "开始编译内核（SDK自动包含模块编译）..."
+          $ECHO "开始编译内核（SDK自动包含模块编译）..."
           make linux -j$(nproc)
           
           # 复制编译好的内核
           if [ -f "out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin" ]; then
-            cp out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin ../hi_kernel_new.bin
-            echo "✅ 内核编译成功，大小: $(du -h ../hi_kernel_new.bin | cut -f1)"
+            $CP out/hi3798mv100/hi3798mdmo1g/image/emmc_image/hi_kernel.bin ../hi_kernel_new.bin
+            $ECHO "✅ 内核编译成功，大小: $(du -h ../hi_kernel_new.bin | cut -f1)"
           else
-            echo "❌ 内核编译失败"
+            $ECHO "❌ 内核编译失败"
             exit 1
           fi
           
-          # 自动查找SDK生成的内核模块目录
-          echo "查找SDK生成的内核模块目录..."
-          MODULES_PATHS=(
-            "out/hi3798mv100/hi3798mdmo1g/kmod/lib/modules"
-            "out/hi3798mv100/hi3798mdmo1g/rootfs/lib/modules"
-            "out/hi3798mv100/hi3798mdmo1g/kernel/modules"
-            "source/kernel/linux-4.4.y/modules/lib/modules"
-          )
+          # 使用find命令自动查找内核模块目录（不再硬编码路径）
+          $ECHO "查找SDK生成的内核模块目录..."
+          MODULES_DIR=$($FIND out -type d -path "*lib/modules" | head -1)
           
-          for PATH in "${MODULES_PATHS[@]}"; do
-            if [ -d "$PATH" ]; then
-              echo "✅ 找到内核模块目录: $(pwd)/$PATH"
-              echo "MODULES_DIR=$(pwd)/$PATH" >> $GITHUB_ENV
-              break
-            fi
-          done
+          if [ -n "$MODULES_DIR" ] && [ -d "$MODULES_DIR" ]; then
+            $ECHO "✅ 找到内核模块目录: $($PWD)/$MODULES_DIR"
+            $ECHO "MODULES_DIR=$($PWD)/$MODULES_DIR" >> $GITHUB_ENV
+          else
+            $ECHO "⚠️ 未找到内核模块目录"
+            # 列出所有可能的目录用于调试
+            $ECHO "=== 所有lib目录 ==="
+            $FIND out -name "lib" -type d
+          fi
           
-          # 列出out目录结构用于调试
-          echo "=== SDK输出目录结构 ==="
-          ls -la out/hi3798mv100/hi3798mdmo1g/
+          # 列出输出目录结构（使用绝对路径ls）
+          $ECHO "=== SDK输出目录结构 ==="
+          $LS -la out/hi3798mv100/hi3798mdmo1g/
 
       # ====================== 第四阶段：下载预编译内核（可选） ======================
       - name: Download prebuilt kernel artifact
@@ -394,8 +402,6 @@ jobs:
             echo "✅ 内核模块集成完成"
           else
             echo "⚠️ 未找到内核模块目录，跳过模块集成"
-            echo "当前SDK输出目录:"
-            ls -la ${{ env.SDK_DIR }}/out/hi3798mv100/hi3798mdmo1g/
           fi
           
           # 添加首次启动修复脚本
