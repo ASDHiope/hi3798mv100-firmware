@@ -1,0 +1,3 @@
+[submodule "HiSTBLinuxV100R005C00SPC060"]
+    path = HiSTBLinuxV100R005C00SPC060
+    url = https://github.com/ASDHiope/HiSTBLinuxKernel.git
